@@ -1,0 +1,278 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#f5f4ee" />
+    <meta
+      name="description"
+      content="Explore the real SCR1 RISC-V core in your browser. Step RTL cycles, inspect registers, and export traces."
+    />
+    <title>SCR1 · Open core, open bench</title>
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <header>
+      <a class="brand" href="./"
+        ><span class="mark">S<span>1</span></span> SCR1<span
+          class="brand-light"
+        >
+          / workbench</span
+        ></a
+      ><span class="local">● Runs on your device</span
+      ><a
+        href="https://github.com/syntacore/scr1"
+        target="_blank"
+        rel="noreferrer"
+        >Meet the core ↗</a
+      >
+    </header>
+    <main>
+      <section class="intro">
+        <div>
+          <p class="eyebrow">RISC-V, UNDER THE HOOD</p>
+          <h1>Small core.<br /><span>Big discoveries.</span></h1>
+          <p>
+            Take a real processor apart, one clock at a time.<br />Write code.
+            Follow the signals. See what happens.
+          </p>
+        </div>
+        <div
+          class="chip"
+          aria-label="SCR1 RV32IMC RTL running through WebAssembly"
+        >
+          <span class="chip-dot"></span><small>SYNTACORE</small
+          ><strong>SCR1</strong><span id="chip-isa">RV32IMC · RTL → WASM</span>
+        </div>
+      </section>
+      <section class="bench" aria-label="Processor workbench">
+        <div class="toolbar">
+          <div class="engine">
+            <span id="status-dot"></span
+            ><strong id="status" role="status">Loading RTL…</strong
+            ><select id="profile" aria-label="SCR1 hardware profile"></select
+            ><small id="core-info">RV32IMC / 64 KiB</small>
+          </div>
+          <div class="controls">
+            <button id="reset" disabled>↺ Reset</button
+            ><button id="cycle" disabled>+ Clock</button
+            ><button id="step" disabled>Step →</button
+            ><button id="run" class="primary" disabled>▶ Run</button>
+          </div>
+        </div>
+        <p id="profile-description" class="profile-note"></p>
+        <div class="metrics">
+          <div><span>CLOCK CYCLES</span><strong id="cycles">0</strong></div>
+          <div>
+            <span>RETIRED INSTRUCTIONS</span><strong id="retired">0</strong>
+          </div>
+          <div>
+            <span>CYCLES / INSTRUCTION</span><strong id="cpi">—</strong>
+          </div>
+          <div>
+            <span>PROGRAM COUNTER</span><strong id="pc">0x00000200</strong>
+          </div>
+        </div>
+        <div class="workspace">
+          <section class="source panel">
+            <div class="panel-title">
+              <h2><span class="number">01</span> Program</h2>
+              <select id="example" aria-label="Example program"></select>
+            </div>
+            <p id="example-description" class="description"></p>
+            <label class="sr-only" for="editor">RISC-V assembly</label
+            ><textarea
+              id="editor"
+              spellcheck="false"
+              autocapitalize="off"
+              autocomplete="off"
+            ></textarea>
+            <div class="source-actions">
+              <button id="assemble" disabled>Assemble & load</button
+              ><label class="file-button"
+                >Open ELF<input
+                  id="elf"
+                  type="file"
+                  accept=".elf,.axf"
+                  hidden /></label
+              ><span>Ctrl / ⌘ + Enter</span>
+            </div>
+            <p id="message" role="status">Fetching the WebAssembly core…</p>
+            <div class="listing-title">
+              EXECUTION MAP <small>Click a row to toggle a breakpoint</small>
+            </div>
+            <div
+              id="listing"
+              class="listing"
+              aria-label="Program listing"
+            ></div>
+          </section>
+          <section class="state panel">
+            <div class="panel-title">
+              <h2><span class="number">02</span> Registers</h2>
+              <button id="radix" class="subtle">HEX ⇄ DEC</button>
+            </div>
+            <div class="register-head">
+              <span>REGISTER</span><span>VALUE</span><span>REGISTER</span
+              ><span>VALUE</span>
+            </div>
+            <div id="registers" class="registers"></div>
+            <div class="memory-heading">
+              <h2>Memory</h2>
+              <label
+                >Address
+                <input
+                  id="memory-address"
+                  value="0x1000"
+                  aria-label="Memory start address"
+                  size="8"
+              /></label>
+            </div>
+            <div id="memory" class="memory"></div>
+            <p class="hint">
+              Highlighted values changed in the last step. x0 is always zero.
+            </p>
+          </section>
+        </div>
+        <div class="lower">
+          <section class="panel terminal">
+            <div class="panel-title">
+              <h2><span class="number">03</span> UART console</h2>
+              <span class="badge">0xF0000000</span>
+            </div>
+            <pre
+              id="console"
+              aria-live="polite"
+            ><span>Output from your program will appear here.</span></pre>
+          </section>
+          <section class="panel trace">
+            <div class="panel-title">
+              <h2><span class="number">04</span> Retirement trace</h2>
+              <div>
+                <button id="json" disabled>JSON ↓</button
+                ><button id="vcd" disabled>VCD ↓</button>
+              </div>
+            </div>
+            <div id="trace" class="trace-body">
+              Step through a program to see retired instruction addresses.
+            </div>
+          </section>
+        </div>
+        <section class="wave-panel">
+          <div class="panel-title">
+            <h2>On the bus</h2>
+            <span class="hint"
+              >Last 48 clocks · sampled before each rising edge</span
+            >
+          </div>
+          <div id="wave" class="wave"></div>
+          <div class="legend">
+            <span>● Instruction request</span><span>● Data request</span
+            ><span>● Memory write</span>
+          </div>
+        </section>
+        <section class="peripheral panel">
+          <div class="panel-title">
+            <h2>Hot-plug a peripheral</h2>
+            <span class="badge">WASM MMIO · ABI v1</span>
+          </div>
+          <p class="hint">
+            Attach a standalone Wasm module to the live memory bus. Replacement
+            preserves CPU state; loading a demo resets the program.
+          </p>
+          <div class="peripheral-controls">
+            <select id="peripheral-example" aria-label="Example peripheral">
+              <option value="pulse-counter">GPIO + cycle counter</option>
+            </select>
+            <label
+              >Base
+              <input
+                id="peripheral-base"
+                value="0x40000000"
+                size="10"
+                aria-label="Peripheral MMIO base address"
+            /></label>
+            <button id="peripheral-attach" disabled>Attach selected</button>
+            <label class="file-button"
+              >Open .wasm<input
+                id="peripheral-file"
+                type="file"
+                accept=".wasm"
+                hidden
+            /></label>
+            <button id="peripheral-demo" disabled>Load counting demo</button>
+            <button id="peripheral-detach" disabled>Detach</button>
+          </div>
+          <p id="peripheral-status" role="status">
+            No module attached. The example counts simulated clocks and rotates
+            an 8-bit GPIO pattern.
+          </p>
+          <div id="peripheral-state" class="peripheral-state"></div>
+        </section>
+        <section class="comparison panel">
+          <div class="panel-title">
+            <h2>One program. Three real cores.</h2>
+            <button id="compare" disabled>Compare profiles →</button>
+          </div>
+          <p class="hint">
+            The same binary, RAM and bus latency on every profile. Pipeline
+            settings differ too. Compare shared registers, RAM, UART and
+            retirement traces.
+          </p>
+          <div id="comparison" role="status">
+            Load a program to compare its behavior across SCR1 profiles.
+          </div>
+        </section>
+      </section>
+      <section class="notes">
+        <article>
+          <span>REAL HARDWARE, VIRTUAL BENCH</span>
+          <h3>The RTL does the work.</h3>
+          <p>
+            Unmodified SCR1 SystemVerilog, translated by Verilator and compiled
+            to WebAssembly. Every step advances the hardware model. No server,
+            account, or upload required.
+          </p>
+        </article>
+        <article>
+          <span>A LITTLE LAB, READY TO EXPLORE</span>
+          <h3>Make the invisible visible.</h3>
+          <p>
+            Follow register changes, set PC breakpoints, inspect RAM, or export
+            a JSON retirement trace and a VCD of the memory bus for your next
+            lab report.
+          </p>
+        </article>
+        <article>
+          <span>BRING YOUR OWN PROGRAM</span>
+          <h3>From a loop to a lesson.</h3>
+          <p>
+            The editor supports a focused RV32IM assembly subset. For full
+            RV32IMC, load a bare-metal ELF32 linked at 0x200. RAM spans
+            0x0000–0xFFFF; store an exit code at 0xF0000004 to stop.
+          </p>
+        </article>
+      </section>
+      <details class="reference">
+        <summary>Assembly reference & keyboard shortcuts</summary>
+        <p>
+          Base: add/sub, shifts, comparisons, and/or/xor, immediate variants,
+          loads/stores, branches, lui/auipc, jal/jalr, ecall/ebreak/wfi. M: mul,
+          mulh, mulhsu, mulhu, div/divu, rem/remu. Pseudo: li, la, mv, j, ret,
+          nop, beqz/bnez. Use labels, ABI register names or x0–x31, .word,
+          decimal/hex integers and # comments. Other directives, expressions,
+          CSR mnemonics and compressed assembly require an external assembler.
+          Ctrl/⌘+Enter assembles; Alt+→ steps; Escape pauses. Editing requires
+          assembling again. Traps stop the bench for inspection.
+        </p>
+      </details>
+    </main>
+    <footer>
+      <span
+        >SCR1 WORKBENCH <span class="footer-dot">/</span> An open window into
+        RISC-V.</span
+      ><span>SCR1 © Syntacore · <a href="./SCR1-LICENSE">Core license</a></span>
+    </footer>
+    <script type="module" src="./app.mjs"></script>
+  </body>
+</html>

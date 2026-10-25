@@ -1,0 +1,26 @@
+{
+  "imc": {
+    "name": "MAX",
+    "isa": "RV32IMC",
+    "define": "SCR1_CFG_RV32IMC_MAX",
+    "registers": 32,
+    "multiply": true,
+    "description": "Full pipeline · integer multiply/divide · compressed instructions"
+  },
+  "ic": {
+    "name": "BASE",
+    "isa": "RV32IC",
+    "define": "SCR1_CFG_RV32IC_BASE",
+    "registers": 32,
+    "multiply": false,
+    "description": "Decode stage bypass · compressed instructions · no M extension"
+  },
+  "ec": {
+    "name": "MIN",
+    "isa": "RV32EC",
+    "define": "SCR1_CFG_RV32EC_MIN",
+    "registers": 16,
+    "multiply": false,
+    "description": "Decode/execute stage bypass · 16 registers · compressed instructions"
+  }
+}
