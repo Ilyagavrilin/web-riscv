@@ -9,6 +9,12 @@ export class Engine {
     this.peripherals = new PeripheralBus();
     this.breakpoints = new Set();
     this.memoryAddress = 0x1000;
+    this.diagnostic = false;
+    this.watchpoint = null;
+    this.logFetch = false;
+    this.events = [];
+    this.eventSequence = 0;
+    this.droppedEvents = 0;
   }
   load(program) {
     this.peripherals.reset();
@@ -27,6 +33,31 @@ export class Engine {
     this.wave = [];
     this.status = "paused";
     this.lastPC = null;
+    this.events = [];
+    this.eventSequence = 0;
+    this.droppedEvents = 0;
+    this.lastRegisters = Array.from(
+      { length: 32 },
+      (_, i) => this.m._reg(i) >>> 0,
+    );
+    this.record("load", {
+      entry: program.entry,
+      bytes: program.segments.reduce((n, s) => n + s.bytes.length, 0),
+    });
+  }
+  record(kind, detail = {}) {
+    this.events.push({
+      sequence: ++this.eventSequence,
+      cycle: this.cycles ?? 0,
+      kind,
+      ...detail,
+    });
+    const limit = this.diagnostic ? 10000 : 1000;
+    const excess = this.events.length - limit;
+    if (excess > 0) {
+      this.events.splice(0, excess);
+      this.droppedEvents += excess;
+    }
   }
   tick() {
     if (this.status === "halted" || this.status === "trap") return;
@@ -42,11 +73,66 @@ export class Engine {
       data: m._signal(14) >>> 0,
       width: m._signal(15),
     };
-    const response = this.peripherals.dispatch(bus);
+    const accepted = Boolean(m._signal(16));
+    const response = this.peripherals.dispatch({
+      ...bus,
+      request: bus.request && accepted,
+    });
     m._mmio_response(response.hit, response.fault, response.data);
     m._tick();
     this.peripherals.tick();
     this.cycles++;
+    if (this.diagnostic && accepted && bus.request) {
+      const target =
+        bus.address < 65536
+          ? "RAM"
+          : bus.address === 0xf0000000
+            ? "UART"
+            : bus.address === 0xf0000004
+              ? "Exit"
+              : ([...this.peripherals.devices.values()].find(
+                  (d) => bus.address >= d.base && bus.address < d.base + d.size,
+                )?.name ?? "unmapped");
+      this.record(
+        target === "RAM" || target === "unmapped" ? "memory" : "mmio",
+        {
+          pc: bus.pc,
+          address: bus.address,
+          target,
+          operation: bus.write ? "write" : "read",
+          width: 1 << bus.width,
+          data: bus.write
+            ? bus.data
+            : m._signal(20) === 1
+              ? m._signal(19) >>> 0
+              : null,
+          response: m._signal(20) === 1 ? "ok" : "error",
+          deviceFault: this.peripherals.lastFault,
+        },
+      );
+    }
+    if (this.diagnostic && this.logFetch && accepted && bus.fetch)
+      this.record("fetch", {
+        address: bus.fetchAddress,
+        data: m._signal(18) === 1 ? m._signal(17) >>> 0 : null,
+        response: m._signal(18) === 1 ? "ok" : "error",
+      });
+    if (accepted && bus.request && this.watchpoint) {
+      const w = this.watchpoint;
+      if (
+        w.address >= bus.address &&
+        w.address < bus.address + (1 << bus.width) &&
+        (w.access === "any" || w.access === (bus.write ? "write" : "read"))
+      ) {
+        this.status = "watchpoint";
+        this.record("watchpoint", {
+          pc: bus.pc,
+          address: bus.address,
+          operation: bus.write ? "write" : "read",
+          width: 1 << bus.width,
+        });
+      }
+    }
     this.wave.push(bus);
     if (this.wave.length > 4096) this.wave.shift();
     if (m._signal(1)) {
@@ -57,19 +143,40 @@ export class Engine {
         pc: this.lastPC,
         registers: Array.from({ length: 32 }, (_, i) => m._reg(i) >>> 0),
       });
+      if (this.diagnostic) {
+        const registers = this.history.at(-1).registers;
+        const changes = [];
+        for (let i = 1; i < this.config.registers; i++)
+          if (registers[i] !== this.lastRegisters[i])
+            changes.push({
+              register: i,
+              before: this.lastRegisters[i],
+              after: registers[i],
+            });
+        this.record("retire", { pc: this.lastPC, changes });
+        this.lastRegisters = registers.slice();
+      }
       if (this.history.length > 1024) this.history.shift();
     }
-    if (m._signal(5))
+    if (m._signal(5)) {
+      if (this.diagnostic) this.record("uart", { byte: m._signal(6) });
       this.console = (this.console + String.fromCharCode(m._signal(6))).slice(
         -16384,
       );
+    }
     if (m._signal(7)) {
       this.status = "halted";
       this.exitCode = m._signal(8) >>> 0;
+      this.record("exit", { code: this.exitCode });
     }
     if (m._signal(3)) {
       this.status = "trap";
       this.cause = m._signal(4);
+      this.record("trap", {
+        pc: m._signal(2) >>> 0,
+        cause: this.cause,
+        value: m._signal(21) >>> 0,
+      });
     }
   }
   advance(mode, budget = 2000) {
@@ -86,10 +193,12 @@ export class Engine {
         this.cycles > 0
       ) {
         this.status = "breakpoint";
+        this.record("breakpoint", { pc: this.m._signal(0) >>> 0 });
         break;
       }
       this.status = "paused";
       this.tick();
+      if (this.status === "watchpoint") break;
       if (mode === "cycle" || (mode === "instruction" && this.retired > before))
         break;
     }
@@ -97,6 +206,18 @@ export class Engine {
   }
   snapshot() {
     return {
+      watchpoint: this.watchpoint,
+      diagnostic: this.diagnostic,
+      events: this.events.slice(-200),
+      retainedEvents: this.events.length,
+      droppedEvents: this.droppedEvents,
+      csr: {
+        mstatus: this.m._signal(22) >>> 0,
+        mepc: this.m._signal(23) >>> 0,
+        mtval: this.m._signal(24) >>> 0,
+        mcause: this.m._signal(25) >>> 0,
+      },
+      peripherals: this.peripherals.snapshots(),
       peripheral: this.peripherals.snapshot(),
       profile: this.profile,
       isa: this.config.isa,
@@ -119,7 +240,14 @@ export class Engine {
     };
   }
   export() {
-    return { ...this.snapshot(), history: this.history, wave: this.wave };
+    return {
+      ...this.snapshot(),
+      events: this.events,
+      history: this.history,
+      wave: this.wave,
+      schemaVersion: 2,
+      timing: "bus sampled before rising edge; events numbered at that edge",
+    };
   }
 }
 export function toVcd(wave) {

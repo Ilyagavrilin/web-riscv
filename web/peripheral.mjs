@@ -1,4 +1,8 @@
 export class PeripheralBus {
+  devices = new Map();
+  get device() {
+    return this.devices.values().next().value;
+  }
   async attach(buffer, base, name) {
     if (
       !Number.isInteger(base) ||
@@ -38,17 +42,25 @@ export class PeripheralBus {
       );
     if (base < 0xf0000008 && base + size > 0xf0000000)
       throw Error("Peripheral overlaps the built-in UART/exit registers");
+    for (const d of this.devices.values()) {
+      if (d.base !== base && base < d.base + d.size && base + size > d.base)
+        throw Error(`MMIO window overlaps ${d.name}`);
+    }
     exports.mmio_reset();
-    this.device = { exports, base, size, name };
+    this.devices.set(base, { exports, base, size, name });
   }
-  detach() {
-    this.device = undefined;
+  detach(base) {
+    if (base === undefined) this.devices.clear();
+    else this.devices.delete(base);
   }
   reset() {
-    this.device?.exports.mmio_reset();
+    for (const d of this.devices.values()) d.exports.mmio_reset();
   }
   dispatch(bus) {
-    const d = this.device;
+    this.lastFault = undefined;
+    const d = [...this.devices.values()].find(
+      (d) => bus.address >= d.base && bus.address < d.base + d.size,
+    );
     if (
       !d ||
       !bus.request ||
@@ -71,22 +83,23 @@ export class PeripheralBus {
         data: d.exports.mmio_read(offset, width) >>> 0,
       };
     } catch {
-      this.detach();
+      this.lastFault = `Module trapped: ${d.name}`;
+      this.detach(d.base);
       return { hit: 1, fault: 1, data: 0 };
     }
   }
   tick() {
-    try {
-      this.device?.exports.mmio_tick?.(1);
-    } catch {
-      this.detach();
-      throw Error("Peripheral tick trapped; module detached");
+    for (const d of this.devices.values()) {
+      try {
+        d.exports.mmio_tick?.(1);
+      } catch {
+        this.detach(d.base);
+        throw Error(`Peripheral tick trapped: ${d.name}; module detached`);
+      }
     }
   }
-  snapshot() {
-    const d = this.device;
-    if (!d) return null;
-    return {
+  snapshots() {
+    return [...this.devices.values()].map((d) => ({
       name: d.name,
       base: d.base,
       size: d.size,
@@ -97,6 +110,9 @@ export class PeripheralBus {
               (_, i) => d.exports.mmio_inspect(i * 4) >>> 0,
             )
           : [],
-    };
+    }));
+  }
+  snapshot() {
+    return this.snapshots()[0] ?? null;
   }
 }

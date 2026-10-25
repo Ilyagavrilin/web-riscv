@@ -3,276 +3,604 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <meta name="theme-color" content="#f5f4ee" />
+    <meta name="theme-color" content="#101b2a" />
     <meta
       name="description"
-      content="Explore the real SCR1 RISC-V core in your browser. Step RTL cycles, inspect registers, and export traces."
+      content="A local SCR1 RTL debugger with ELF loading, Wasm peripherals, and cycle diagnostics."
     />
-    <title>SCR1 · Open core, open bench</title>
+    <title>SCR1 Debugger</title>
     <link rel="stylesheet" href="./style.css" />
   </head>
   <body>
-    <header>
-      <a class="brand" href="./"
-        ><span class="mark">S<span>1</span></span> SCR1<span
-          class="brand-light"
-        >
-          / workbench</span
-        ></a
-      ><span class="local">● Runs on your device</span
-      ><a
-        href="https://github.com/syntacore/scr1"
-        target="_blank"
-        rel="noreferrer"
-        >Meet the core ↗</a
-      >
+    <header class="app-header">
+      <a class="brand" href="./">SCR1 <span>Debugger</span></a
+      ><span class="local">Local execution · no uploads</span>
     </header>
+    <nav class="tabs" aria-label="Workspace" role="tablist">
+      <button
+        role="tab"
+        id="tab-debugger"
+        aria-controls="view-debugger"
+        aria-selected="true"
+        data-tab="debugger"
+      >
+        Debugger
+      </button>
+      <button
+        role="tab"
+        id="tab-devices"
+        aria-controls="view-devices"
+        aria-selected="false"
+        data-tab="devices"
+      >
+        Devices
+      </button>
+      <button
+        role="tab"
+        id="tab-diagnostics"
+        aria-controls="view-diagnostics"
+        aria-selected="false"
+        data-tab="diagnostics"
+      >
+        Diagnostics
+      </button>
+      <button
+        role="tab"
+        id="tab-compare"
+        aria-controls="view-compare"
+        aria-selected="false"
+        data-tab="compare"
+      >
+        Compare
+      </button>
+      <button
+        role="tab"
+        id="tab-guide"
+        aria-controls="view-guide"
+        aria-selected="false"
+        data-tab="guide"
+      >
+        Guide
+      </button>
+      <button
+        role="tab"
+        id="tab-about"
+        aria-controls="view-about"
+        aria-selected="false"
+        data-tab="about"
+      >
+        About
+      </button>
+    </nav>
+    <section class="toolbar" aria-label="Execution controls">
+      <div class="engine">
+        <span id="status-dot"></span
+        ><strong id="status" role="status">Loading RTL…</strong
+        ><select id="profile" aria-label="SCR1 hardware profile"></select
+        ><span id="core-info"></span>
+      </div>
+      <div class="controls">
+        <button id="reset" disabled>Reset</button
+        ><button id="cycle" disabled>Clock +1</button
+        ><button id="step" disabled>Instruction +1</button
+        ><button id="run" class="primary" disabled>Run</button>
+      </div>
+    </section>
     <main>
-      <section class="intro">
-        <div>
-          <p class="eyebrow">RISC-V, UNDER THE HOOD</p>
-          <h1>Small core.<br /><span>Big discoveries.</span></h1>
-          <p>
-            Take a real processor apart, one clock at a time.<br />Write code.
-            Follow the signals. See what happens.
-          </p>
-        </div>
-        <div
-          class="chip"
-          aria-label="SCR1 RV32IMC RTL running through WebAssembly"
-        >
-          <span class="chip-dot"></span><small>SYNTACORE</small
-          ><strong>SCR1</strong><span id="chip-isa">RV32IMC · RTL → WASM</span>
-        </div>
-      </section>
-      <section class="bench" aria-label="Processor workbench">
-        <div class="toolbar">
-          <div class="engine">
-            <span id="status-dot"></span
-            ><strong id="status" role="status">Loading RTL…</strong
-            ><select id="profile" aria-label="SCR1 hardware profile"></select
-            ><small id="core-info">RV32IMC / 64 KiB</small>
-          </div>
-          <div class="controls">
-            <button id="reset" disabled>↺ Reset</button
-            ><button id="cycle" disabled>+ Clock</button
-            ><button id="step" disabled>Step →</button
-            ><button id="run" class="primary" disabled>▶ Run</button>
-          </div>
-        </div>
-        <p id="profile-description" class="profile-note"></p>
+      <p id="message" class="notification" role="status">
+        Loading the processor…
+      </p>
+      <section
+        id="view-debugger"
+        role="tabpanel"
+        aria-labelledby="tab-debugger"
+        class="view"
+      >
         <div class="metrics">
-          <div><span>CLOCK CYCLES</span><strong id="cycles">0</strong></div>
-          <div>
-            <span>RETIRED INSTRUCTIONS</span><strong id="retired">0</strong>
-          </div>
-          <div>
-            <span>CYCLES / INSTRUCTION</span><strong id="cpi">—</strong>
-          </div>
-          <div>
-            <span>PROGRAM COUNTER</span><strong id="pc">0x00000200</strong>
-          </div>
+          <div><span>PC</span><strong id="pc">0x00000200</strong></div>
+          <div><span>Clocks</span><strong id="cycles">0</strong></div>
+          <div><span>Retired</span><strong id="retired">0</strong></div>
+          <div><span>CPI</span><strong id="cpi">—</strong></div>
         </div>
+        <section class="panel program-loader">
+          <div class="panel-title">
+            <h1>Program</h1>
+            <span id="program-name" class="badge">Assembly editor</span>
+          </div>
+          <div id="elf-drop" class="dropzone">
+            <label for="elf"
+              >Load your ELF executable
+              <span>Choose a file or drop an ELF here</span></label
+            ><input id="elf" type="file" accept=".elf,.axf,application/x-elf" />
+          </div>
+          <div id="program-info" class="hint"></div>
+          <div id="elf-segments" class="table-scroll"></div>
+          <div class="library-row">
+            <label for="saved-elf">Local ELF library</label
+            ><select id="saved-elf">
+              <option value="">Choose a saved executable</option></select
+            ><button id="load-saved-elf">Load</button
+            ><button id="delete-saved-elf">Remove saved file</button>
+          </div>
+        </section>
         <div class="workspace">
-          <section class="source panel">
+          <section class="panel source">
             <div class="panel-title">
-              <h2><span class="number">01</span> Program</h2>
-              <select id="example" aria-label="Example program"></select>
+              <h2>Code & breakpoints</h2>
+              <form id="breakpoint-form" class="inline">
+                <input
+                  id="breakpoint-address"
+                  placeholder="0x200"
+                  aria-label="Breakpoint address"
+                  size="10"
+                /><button>Add breakpoint</button>
+              </form>
             </div>
-            <p id="example-description" class="description"></p>
-            <label class="sr-only" for="editor">RISC-V assembly</label
-            ><textarea
-              id="editor"
-              spellcheck="false"
-              autocapitalize="off"
-              autocomplete="off"
-            ></textarea>
-            <div class="source-actions">
-              <button id="assemble" disabled>Assemble & load</button
-              ><label class="file-button"
-                >Open ELF<input
-                  id="elf"
-                  type="file"
-                  accept=".elf,.axf"
-                  hidden /></label
-              ><span>Ctrl / ⌘ + Enter</span>
-            </div>
-            <p id="message" role="status">Fetching the WebAssembly core…</p>
+            <div id="breakpoints" class="breakpoints"></div>
             <div class="listing-title">
-              EXECUTION MAP <small>Click a row to toggle a breakpoint</small>
+              <span id="listing-range">PC · encoding · instruction</span
+              ><span>Click a row to toggle a breakpoint</span>
             </div>
             <div
               id="listing"
               class="listing"
               aria-label="Program listing"
             ></div>
+            <details id="assembly-editor" open>
+              <summary>Assembly editor</summary>
+              <div class="panel-title">
+                <select id="example" aria-label="Example program"></select
+                ><button id="assemble" disabled>Assemble & load</button>
+              </div>
+              <p id="example-description" class="hint"></p>
+              <label class="sr-only" for="editor">RISC-V assembly source</label
+              ><textarea
+                id="editor"
+                spellcheck="false"
+                autocapitalize="off"
+                autocomplete="off"
+              ></textarea>
+              <p class="hint">
+                Ctrl / ⌘ + Enter to assemble. Loading assembly replaces the
+                active ELF.
+              </p>
+            </details>
           </section>
-          <section class="state panel">
+          <section class="panel state">
             <div class="panel-title">
-              <h2><span class="number">02</span> Registers</h2>
-              <button id="radix" class="subtle">HEX ⇄ DEC</button>
-            </div>
-            <div class="register-head">
-              <span>REGISTER</span><span>VALUE</span><span>REGISTER</span
-              ><span>VALUE</span>
+              <h2>Registers</h2>
+              <button id="radix">Hex / signed decimal</button>
             </div>
             <div id="registers" class="registers"></div>
-            <div class="memory-heading">
+            <h2 class="subheading">Machine CSRs</h2>
+            <div id="csrs" class="csr-grid"></div>
+            <p class="hint">
+              Shaded registers are unavailable in RV32E. Highlighted values
+              changed since the previous update.
+            </p>
+          </section>
+        </div>
+        <div class="lower">
+          <section class="panel">
+            <div class="panel-title">
               <h2>Memory</h2>
-              <label
+              <label class="inline"
                 >Address
                 <input
                   id="memory-address"
                   value="0x1000"
                   aria-label="Memory start address"
-                  size="8"
+                  size="10"
               /></label>
             </div>
             <div id="memory" class="memory"></div>
-            <p class="hint">
-              Highlighted values changed in the last step. x0 is always zero.
+          </section>
+          <section class="panel">
+            <div class="panel-title">
+              <h2>UART</h2>
+              <span class="badge">Write byte at 0xF0000000</span>
+            </div>
+            <pre id="console" aria-live="polite">
+Waiting for program output.</pre>
+          </section>
+        </div>
+      </section>
+      <section
+        id="view-devices"
+        role="tabpanel"
+        aria-labelledby="tab-devices"
+        class="view"
+        hidden
+      >
+        <div class="view-heading">
+          <div>
+            <h1>MMIO devices</h1>
+            <p>
+              Attach standalone Wasm peripherals to the live CPU bus. Separate
+              address windows run independently.
             </p>
-          </section>
-        </div>
-        <div class="lower">
-          <section class="panel terminal">
-            <div class="panel-title">
-              <h2><span class="number">03</span> UART console</h2>
-              <span class="badge">0xF0000000</span>
-            </div>
-            <pre
-              id="console"
-              aria-live="polite"
-            ><span>Output from your program will appear here.</span></pre>
-          </section>
-          <section class="panel trace">
-            <div class="panel-title">
-              <h2><span class="number">04</span> Retirement trace</h2>
-              <div>
-                <button id="json" disabled>JSON ↓</button
-                ><button id="vcd" disabled>VCD ↓</button>
-              </div>
-            </div>
-            <div id="trace" class="trace-body">
-              Step through a program to see retired instruction addresses.
-            </div>
-          </section>
-        </div>
-        <section class="wave-panel">
-          <div class="panel-title">
-            <h2>On the bus</h2>
-            <span class="hint"
-              >Last 48 clocks · sampled before each rising edge</span
-            >
           </div>
-          <div id="wave" class="wave"></div>
-          <div class="legend">
-            <span>● Instruction request</span><span>● Data request</span
-            ><span>● Memory write</span>
-          </div>
-        </section>
-        <section class="peripheral panel">
+          <button id="device-guide">How to write a module</button>
+        </div>
+        <section class="panel">
           <div class="panel-title">
-            <h2>Hot-plug a peripheral</h2>
-            <span class="badge">WASM MMIO · ABI v1</span>
+            <h2>Add or replace a device</h2>
+            <span class="badge">ABI v1</span>
+          </div>
+          <div class="peripheral-controls">
+            <label
+              >Example
+              <select id="peripheral-example">
+                <option value="pulse-counter">GPIO + cycle counter</option>
+              </select></label
+            ><label
+              >Base address
+              <input id="peripheral-base" value="0x40000000" size="12" /></label
+            ><button id="peripheral-attach" disabled>Attach example</button
+            ><button id="peripheral-demo" disabled>Load counting demo</button>
+          </div>
+          <div class="file-row">
+            <label for="peripheral-file">Load your own module</label
+            ><input
+              id="peripheral-file"
+              type="file"
+              accept=".wasm,application/wasm"
+            />
+          </div>
+          <div class="library-row">
+            <label for="saved-device">Local module library</label
+            ><select id="saved-device">
+              <option value="">Choose a saved module</option></select
+            ><button id="load-saved-device">Attach at address</button
+            ><button id="delete-saved-device">Remove saved file</button>
           </div>
           <p class="hint">
-            Attach a standalone Wasm module to the live memory bus. Replacement
-            preserves CPU state; loading a demo resets the program.
+            A different base adds a device. The same base replaces that device
+            after validation. CPU registers and RAM are preserved.
           </p>
-          <div class="peripheral-controls">
-            <select id="peripheral-example" aria-label="Example peripheral">
-              <option value="pulse-counter">GPIO + cycle counter</option>
-            </select>
-            <label
-              >Base
-              <input
-                id="peripheral-base"
-                value="0x40000000"
-                size="10"
-                aria-label="Peripheral MMIO base address"
-            /></label>
-            <button id="peripheral-attach" disabled>Attach selected</button>
-            <label class="file-button"
-              >Open .wasm<input
-                id="peripheral-file"
-                type="file"
-                accept=".wasm"
-                hidden
-            /></label>
-            <button id="peripheral-demo" disabled>Load counting demo</button>
-            <button id="peripheral-detach" disabled>Detach</button>
-          </div>
-          <p id="peripheral-status" role="status">
-            No module attached. The example counts simulated clocks and rotates
-            an 8-bit GPIO pattern.
-          </p>
+          <p id="peripheral-status" role="status">No module attached.</p>
+          <button id="peripheral-detach" disabled>Detach all devices</button>
+        </section>
+        <section class="panel">
+          <h2>Live device state</h2>
           <div id="peripheral-state" class="peripheral-state"></div>
         </section>
-        <section class="comparison panel">
-          <div class="panel-title">
-            <h2>One program. Three real cores.</h2>
-            <button id="compare" disabled>Compare profiles →</button>
-          </div>
-          <p class="hint">
-            The same binary, RAM and bus latency on every profile. Pipeline
-            settings differ too. Compare shared registers, RAM, UART and
-            retirement traces.
-          </p>
-          <div id="comparison" role="status">
-            Load a program to compare its behavior across SCR1 profiles.
-          </div>
+        <section class="panel">
+          <h2>Address map</h2>
+          <div id="address-map" class="table-scroll"></div>
         </section>
       </section>
-      <section class="notes">
-        <article>
-          <span>REAL HARDWARE, VIRTUAL BENCH</span>
-          <h3>The RTL does the work.</h3>
+      <section
+        id="view-diagnostics"
+        role="tabpanel"
+        aria-labelledby="tab-diagnostics"
+        class="view"
+        hidden
+      >
+        <div class="view-heading">
+          <div>
+            <h1>Diagnostics</h1>
+            <p>
+              Inspect accepted bus transactions, register changes, exceptions,
+              and module lifecycle events.
+            </p>
+          </div>
+          <div class="inline">
+            <button id="json" disabled>Export JSON</button
+            ><button id="vcd" disabled>Export bus VCD</button>
+          </div>
+        </div>
+        <section class="panel">
+          <div class="diagnostic-controls">
+            <label class="toggle"
+              ><input id="diagnostic-mode" type="checkbox" />Diagnostic
+              mode</label
+            ><label class="toggle"
+              ><input id="diagnostic-fetch" type="checkbox" />Include
+              instruction fetches</label
+            ><select id="log-kind" aria-label="Log event type">
+              <option value="">All events</option>
+              <option>retire</option>
+              <option>memory</option>
+              <option>mmio</option>
+              <option>trap</option>
+              <option>fetch</option>
+              <option>uart</option>
+              <option value="device">Device lifecycle</option></select
+            ><input
+              id="log-filter"
+              type="search"
+              placeholder="Filter address, PC, device…"
+              aria-label="Filter diagnostic events"
+            /><button id="clear-log">Clear log</button>
+          </div>
+          <form id="watchpoint-form" class="inline watchpoint-form">
+            <label
+              >Data watchpoint
+              <input
+                id="watchpoint-address"
+                placeholder="0x40000000"
+                size="12"
+                aria-label="Data watchpoint address" /></label
+            ><select id="watchpoint-access" aria-label="Watchpoint access">
+              <option value="any">Read or write</option>
+              <option value="read">Read</option>
+              <option value="write">Write</option></select
+            ><button>Set watchpoint</button
+            ><button id="watchpoint-clear" type="button">
+              Clear watchpoint</button
+            ><span id="watchpoint-status" class="hint">No data watchpoint</span>
+          </form>
+          <p id="log-summary" class="hint"></p>
+          <div id="trap-detail" class="trap-detail" hidden></div>
+          <div class="table-scroll log-scroll">
+            <table class="event-table">
+              <thead>
+                <tr>
+                  <th>Seq / clock</th>
+                  <th>Event</th>
+                  <th>PC / address</th>
+                  <th>Details</th>
+                </tr>
+              </thead>
+              <tbody id="diagnostic-log"></tbody>
+            </table>
+          </div>
+          <p class="hint">
+            Up to 10,000 diagnostic events retained; the table shows the latest
+            200. JSON includes all retained events. Reads and writes are logged
+            at their accepting rising edge. Retirement is a separate event.
+          </p>
+        </section>
+        <div class="lower">
+          <section class="panel">
+            <h2>Retirement trace</h2>
+            <div id="trace" class="trace-body"></div>
+          </section>
+          <section class="panel wave-panel">
+            <div class="panel-title">
+              <h2>Bus activity</h2>
+              <span class="hint">Last 48 clocks</span>
+            </div>
+            <div id="wave" class="wave"></div>
+          </section>
+        </div>
+      </section>
+      <section
+        id="view-compare"
+        role="tabpanel"
+        aria-labelledby="tab-compare"
+        class="view"
+        hidden
+      >
+        <div class="view-heading">
+          <div>
+            <h1>Compare CPU profiles</h1>
+            <p>
+              Execute the same loaded binary and attached devices on all three
+              SCR1 configurations.
+            </p>
+          </div>
+          <button id="compare" disabled>Compare profiles →</button>
+        </div>
+        <section class="panel">
+          <p class="hint">
+            Memory latency is identical. Pipeline settings and ISA differ.
+            Shared registers, RAM, UART and exit codes are compared; devices
+            receive independent instances.
+          </p>
+          <div id="comparison" class="table-scroll" role="status"></div>
+        </section>
+      </section>
+      <section
+        id="view-guide"
+        role="tabpanel"
+        aria-labelledby="tab-guide"
+        class="view reading"
+        hidden
+      >
+        <h1>Developer guide</h1>
+        <nav class="guide-links">
+          <a href="#elf-guide">ELF programs</a
+          ><a href="#mmio-guide">Custom MMIO modules</a
+          ><a href="#diagnostic-guide">Diagnostics</a>
+        </nav>
+        <article id="elf-guide" class="panel">
+          <h2>Load a bare-metal ELF</h2>
           <p>
-            Unmodified SCR1 SystemVerilog, translated by Verilator and compiled
-            to WebAssembly. Every step advances the hardware model. No server,
-            account, or upload required.
+            In Debugger, choose an ELF file or drop it into the loader. The file
+            is saved in your browser's local ELF library. Nothing is sent to a
+            server. Reload it from the library at any time, or remove the saved
+            copy.
+          </p>
+          <p>
+            Use ELF32, little-endian, machine RISC-V, executable type ET_EXEC,
+            with entry at <code>0x200</code>. Every PT_LOAD segment must fit in
+            64 KiB RAM. BSS is zero-filled. The loader shows segment addresses,
+            executable bytes, basic disassembly and any PC breakpoints you set.
+            Unknown compressed encodings appear as <code>.hword</code>; the
+            hardware still executes them.
+          </p>
+          <p>
+            Compile for the selected profile:
+            <code>-march=rv32imc -mabi=ilp32</code>,
+            <code>-march=rv32ic -mabi=ilp32</code>, or
+            <code>-march=rv32ec -mabi=ilp32e</code>. Supply a linker script and
+            startup code that initializes your stack. There is no operating
+            system or syscall emulation. Write an exit code to
+            <code>0xF0000004</code> to finish, or write bytes to
+            <code>0xF0000000</code> for UART.
+          </p>
+          <p>
+            Changing profiles reloads the active image into a fresh CPU. Reset
+            reloads the same ELF, even when the assembly editor contains
+            different text.
           </p>
         </article>
-        <article>
-          <span>A LITTLE LAB, READY TO EXPLORE</span>
-          <h3>Make the invisible visible.</h3>
+        <article id="mmio-guide" class="panel">
+          <h2>Write a Wasm MMIO module</h2>
           <p>
-            Follow register changes, set PC breakpoints, inspect RAM, or export
-            a JSON retirement trace and a VCD of the memory bus for your next
-            lab report.
+            A peripheral is an independent Wasm instance. It receives register
+            offsets and naturally aligned byte widths from accepted CPU data-bus
+            requests. It does not import the CPU module or modify SCR1. Multiple
+            instances can occupy different windows, including multiple instances
+            of the same file.
+          </p>
+          <h3>ABI v1</h3>
+          <pre><code>uint32_t mmio_abi_version(void); // required: return 1
+uint32_t mmio_size(void);        // required: window size in bytes
+void mmio_reset(void);          // required: restore device state
+uint32_t mmio_read(uint32_t offset, uint32_t width);
+void mmio_write(uint32_t offset, uint32_t value, uint32_t width);
+void mmio_tick(uint32_t clocks); // optional: clocks elapsed
+uint32_t mmio_inspect(uint32_t aligned_offset); // optional: no side effects</code></pre>
+          <p>
+            All values use Wasm i32. Width is 1, 2 or 4 bytes; data is
+            little-endian. Read/write run before the accepting rising edge, then
+            <code>mmio_tick(1)</code> runs after it. A write that enables a
+            counter therefore enables counting on that edge. Inspection must
+            never consume FIFOs, acknowledge interrupts or otherwise change
+            device state.
+          </p>
+          <h3>Build and attach</h3>
+          <p>
+            Start with the working C example below. Compile a standalone module
+            with no imports, export the ABI functions, and omit a main entry
+            point. No WASI, allocator or JavaScript glue is needed.
+          </p>
+          <pre><code>nix develop
+emcc peripherals/pulse-counter.c -O2 --no-entry \
+  -sSTANDALONE_WASM=1 -sFILESYSTEM=0 \
+  '-sEXPORTED_FUNCTIONS=["_mmio_abi_version","_mmio_size","_mmio_reset","_mmio_read","_mmio_write","_mmio_tick","_mmio_inspect"]' \
+  -o counter.wasm</code></pre>
+          <p>
+            Open Devices, set an unused base such as <code>0x40000000</code>,
+            and choose your <code>.wasm</code> file. Windows must be
+            word-aligned, 4–65,536 bytes long, outside RAM and the UART/exit
+            window, and must not overlap another device. Using an existing base
+            atomically replaces that instance after validation. Rejected files
+            leave existing devices intact.
+          </p>
+          <h3>Working GPIO / counter example</h3>
+          <p>
+            Offsets: <code>+0x00</code> GPIO, <code>+0x04</code> rotation
+            period, <code>+0x08</code> elapsed active clocks,
+            <code>+0x0C</code> enable bit. Select the built-in module and attach
+            it, then load the counting demo. The CPU executes a loop, reads the
+            peripheral and saves GPIO at <code>0x1000</code> and elapsed clocks
+            at <code>0x1004</code>. Use diagnostic mode to follow each access.
+          </p>
+          <a class="button-link" href="./peripherals/pulse-counter.c" download
+            >Download C source</a
+          >
+          <a
+            class="button-link"
+            href="./peripherals/pulse-counter.wasm"
+            download
+            >Download built module</a
+          >
+          <details>
+            <summary>Read the full C implementation</summary>
+            <pre
+              id="module-source"
+            ><code>Open this section to load the source.</code></pre>
+          </details>
+          <h3>Lifecycle and faults</h3>
+          <p>
+            CPU reset resets every attached device. Replacing a device resets
+            only that device and preserves CPU state. Detach returns its address
+            window to unmapped memory. A read/write Wasm trap detaches the
+            failing instance and returns a bus error to SCR1. Other devices
+            remain attached. A tick failure pauses execution with an error. Run
+            bounded code in callbacks; an infinite callback requires restarting
+            the worker. There is currently no external interrupt, DMA,
+            asynchronous host I/O, or DAP/GDB transport in this ABI.
           </p>
         </article>
-        <article>
-          <span>BRING YOUR OWN PROGRAM</span>
-          <h3>From a loop to a lesson.</h3>
+        <article id="diagnostic-guide" class="panel">
+          <h2>Read a diagnostic capture</h2>
           <p>
-            The editor supports a focused RV32IM assembly subset. For full
-            RV32IMC, load a bare-metal ELF32 linked at 0x200. RAM spans
-            0x0000–0xFFFF; store an exit code at 0xF0000004 to stop.
+            Enable diagnostic mode before the workload. Memory and MMIO events
+            contain cycle number, current PC, address, width, bus data and
+            response. Retirement events contain the completed PC and register
+            changes. Enable fetch logging separately when investigating
+            instruction access errors. Device attach/detach, exit, breakpoint
+            and trap events are recorded independently of diagnostic mode.
+          </p>
+          <p>
+            The trap panel shows faulting PC, cause and trap value; machine CSRs
+            are sampled directly from SCR1. JSON export includes retained
+            events, registers, RAM window, device state and bus samples. Events
+            have a monotonically increasing sequence number; a dropped-event
+            count makes bounded retention explicit. VCD covers sampled bus
+            signals rather than every internal RTL signal. The bench stops
+            before the trap handler executes.
+          </p>
+          <h3>Assembly reference</h3>
+          <p>
+            RV32I arithmetic, shifts, loads/stores, branches, lui/auipc,
+            jal/jalr, ecall/ebreak/wfi; M multiplication and division where
+            supported. Pseudo instructions: li, la, mv, j, ret, nop, beqz/bnez.
+            Labels, ABI or x-register names, .word, decimal/hex integers and #
+            comments are supported. Use an external assembler and ELF for
+            compressed mnemonics, CSR mnemonics and other directives.
+          </p>
+          <p>
+            Ctrl/⌘+Enter assembles, Alt+→ steps an instruction, Escape pauses.
+            PC breakpoints stop before a clock; continuing skips the current
+            address until PC changes.
           </p>
         </article>
       </section>
-      <details class="reference">
-        <summary>Assembly reference & keyboard shortcuts</summary>
-        <p>
-          Base: add/sub, shifts, comparisons, and/or/xor, immediate variants,
-          loads/stores, branches, lui/auipc, jal/jalr, ecall/ebreak/wfi. M: mul,
-          mulh, mulhsu, mulhu, div/divu, rem/remu. Pseudo: li, la, mv, j, ret,
-          nop, beqz/bnez. Use labels, ABI register names or x0–x31, .word,
-          decimal/hex integers and # comments. Other directives, expressions,
-          CSR mnemonics and compressed assembly require an external assembler.
-          Ctrl/⌘+Enter assembles; Alt+→ steps; Escape pauses. Editing requires
-          assembling again. Traps stop the bench for inspection.
-        </p>
-      </details>
+      <section
+        id="view-about"
+        role="tabpanel"
+        aria-labelledby="tab-about"
+        class="view reading"
+        hidden
+      >
+        <h1>About this workbench</h1>
+        <article class="panel">
+          <h2>Model and build</h2>
+          <p>
+            Unmodified Syntacore SCR1 RTL is compiled by Verilator and
+            Emscripten into three separate WebAssembly models. Execution and
+            peripherals run in browser workers. Nix pins the source and
+            toolchain; CMake, Ninja and CTest handle building and testing. This
+            page requires no account or backend service.
+          </p>
+          <p id="profile-description"></p>
+          <p id="chip-isa"></p>
+          <h2>Scope</h2>
+          <p>
+            MAX, BASE and MIN are upstream recommended configurations. They
+            differ in ISA, pipeline bypasses and optional facilities. CPI
+            includes startup clocks with one-clock memory replies; it is not
+            physical chip frequency, area or power. RAM is 64 KiB. External
+            interrupts and JTAG are held inactive. MIN begins with
+            zero-initialized two-state model storage, although its hardware
+            register file has no reset.
+          </p>
+          <p>
+            Comparison stops at 30,000 clocks or 4,096 retirements per profile.
+            Final-state matches require completed runs; trapping and bounded
+            runs are incomplete. Register comparisons use the shared
+            architectural register set.
+          </p>
+          <h2>Licenses</h2>
+          <p>
+            Workbench: <a href="./LICENSE">MIT</a>. SCR1:
+            <a href="./SCR1-LICENSE">Solderpad Hardware Licence 2.0</a>.
+            <a
+              href="https://github.com/syntacore/scr1"
+              target="_blank"
+              rel="noreferrer"
+              >Upstream SCR1 source ↗</a
+            >.
+          </p>
+        </article>
+      </section>
     </main>
-    <footer>
-      <span
-        >SCR1 WORKBENCH <span class="footer-dot">/</span> An open window into
-        RISC-V.</span
-      ><span>SCR1 © Syntacore · <a href="./SCR1-LICENSE">Core license</a></span>
-    </footer>
     <script type="module" src="./app.mjs"></script>
   </body>
 </html>

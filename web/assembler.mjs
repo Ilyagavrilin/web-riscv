@@ -1,3 +1,4 @@
+import { disassemble } from "./disassemble.mjs";
 export const aliases = [
   "zero",
   "ra",
@@ -319,7 +320,13 @@ export function loadElf(buffer) {
       throw Error("ELF segment exceeds file or RAM");
     const data = new Uint8Array(memory);
     data.set(bytes.subarray(offset, offset + length));
-    segments.push({ address, bytes: data });
+    segments.push({
+      address,
+      bytes: data,
+      fileSize: length,
+      memorySize: memory,
+      flags: v.getUint32(h + 24, true),
+    });
   }
   if (
     !segments.some(
@@ -327,5 +334,32 @@ export function loadElf(buffer) {
     )
   )
     throw Error("ELF entry is outside loaded segments");
-  return { entry, segments, listing: [] };
+  const listing = [];
+  const executable = segments.filter((s) => s.flags & 1);
+  for (const segment of executable.length
+    ? executable
+    : segments.filter(
+        (s) => entry >= s.address && entry < s.address + s.fileSize,
+      )) {
+    const code = new DataView(segment.bytes.buffer);
+    for (let offset = 0; offset + 2 <= segment.fileSize;) {
+      const half = code.getUint16(offset, true);
+      const length = (half & 3) === 3 && offset + 4 <= segment.fileSize ? 4 : 2;
+      const word = length === 4 ? code.getUint32(offset, true) : half;
+      listing.push({
+        address: segment.address + offset,
+        word,
+        size: length,
+        text: disassemble(word, segment.address + offset),
+      });
+      offset += length;
+    }
+  }
+  return {
+    entry,
+    segments,
+    listing,
+    format: "ELF32",
+    abi: v.getUint32(36, true) & 8 ? "ilp32e" : "ilp32",
+  };
 }

@@ -65,6 +65,16 @@ unsigned signal(unsigned index) {
     case 13: return core->dmem_addr;
     case 14: return core->dmem_data;
     case 15: return core->dmem_width;
+    case 16: return core->ready;
+    case 17: return core->instruction_data;
+    case 18: return core->instruction_response;
+    case 19: return core->data_read;
+    case 20: return core->data_response;
+    case 21: return core->trap_value;
+    case 22: return core->mstatus;
+    case 23: return core->mepc;
+    case 24: return core->mtval;
+    case 25: return core->mcause;
     default: return 0;
     }
 }

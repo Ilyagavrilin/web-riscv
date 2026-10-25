@@ -12,12 +12,12 @@ export async function compareProfiles(
   for (const [id, profile] of Object.entries(profiles)) {
     onProgress(id);
     const engine = new Engine(await createModel(id), id);
-    if (peripheral)
-      await engine.peripherals.attach(
-        peripheral.buffer,
-        peripheral.base,
-        peripheral.name,
-      );
+    for (const image of Array.isArray(peripheral)
+      ? peripheral
+      : peripheral
+        ? [peripheral]
+        : [])
+      await engine.peripherals.attach(image.buffer, image.base, image.name);
     engine.load(program);
     const trace = [];
     while (

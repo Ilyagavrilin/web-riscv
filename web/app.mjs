@@ -1,3 +1,4 @@
+import { assets } from "./library.mjs";
 import profiles from "./profiles.json" with { type: "json" };
 import { assemble, loadElf, aliases } from "./assembler.mjs";
 import { examples } from "./examples.mjs";
@@ -16,7 +17,8 @@ let ready = false,
   decimal = false,
   generation = 0,
   currentElf,
-  peripheralImage,
+  activeProgram,
+  peripheralImages = [],
   pendingPeripheral;
 for (const [id, profile] of Object.entries(profiles)) {
   const option = document.createElement("option");
@@ -56,11 +58,20 @@ function buttons() {
   $("assemble").disabled = !ready || busy;
   $("example").disabled = busy;
   $("elf").disabled = !ready || busy;
-  $("run").textContent = running ? "Ⅱ Pause" : "▶ Run";
+  $("reset").disabled = !ready || !loaded || busy;
+  $("run").textContent = running ? "Pause" : "Run";
   for (const id of ["peripheral-attach", "peripheral-file", "peripheral-demo"])
     $(id).disabled = !ready || busy;
-  $("peripheral-detach").disabled = !ready || !peripheralImage || busy;
+  $("peripheral-detach").disabled = !ready || !peripheralImages.length || busy;
   $("compare").disabled = !ready || !loaded || dirty || busy;
+  for (const id of [
+    "diagnostic-mode",
+    "diagnostic-fetch",
+    "clear-log",
+    "load-saved-elf",
+    "load-saved-device",
+  ])
+    $(id).disabled = !ready || busy;
 }
 function pause() {
   running = false;
@@ -70,6 +81,8 @@ function pause() {
 function load(program) {
   pause();
   invalidateComparison();
+  activeProgram = program;
+  renderProgram(program);
   listing = program.listing;
   breakpoints.clear();
   previous = [];
@@ -82,9 +95,10 @@ function load(program) {
   renderListing();
 }
 function compile() {
-  currentElf = undefined;
   try {
     const program = assemble($("editor").value, profiles[$("profile").value]);
+    currentElf = undefined;
+    program.name = `Assembly · ${examples[$("example").value]?.name ?? "custom"}`;
     load(program);
     try {
       localStorage.setItem("scr1-source", $("editor").value);
@@ -100,20 +114,34 @@ function compile() {
   }
 }
 function renderListing() {
+  $("breakpoints").replaceChildren();
+  for (const address of [...breakpoints].sort((a, b) => a - b)) {
+    const button = document.createElement("button");
+    button.textContent = `0x${hex(address)} ×`;
+    button.onclick = () => {
+      breakpoints.delete(address);
+      renderListing();
+    };
+    $("breakpoints").append(button);
+  }
   $("listing").replaceChildren();
   if (!listing.length) {
     $("listing").textContent =
       "ELF loaded. Use the PC, memory and trace to inspect execution.";
     return;
   }
-  for (const line of listing) {
+  const index = listing.findIndex((l) => l.address === state?.pc);
+  const start = Math.max(0, index - 40);
+  $("listing-range").textContent =
+    `Instructions ${start + 1}–${Math.min(start + 160, listing.length)} of ${listing.length}`;
+  for (const line of listing.slice(start, start + 160)) {
     const row = document.createElement("button");
     row.className = "code-row";
     row.dataset.address = line.address;
     row.classList.toggle("active", line.address === state?.pc);
     row.classList.toggle("break", breakpoints.has(line.address));
     row.setAttribute("aria-pressed", String(breakpoints.has(line.address)));
-    row.title = `Line ${line.line} · toggle PC breakpoint`;
+    row.title = `${line.line ? `Line ${line.line}` : "ELF instruction"} · toggle PC breakpoint`;
     for (const text of [
       breakpoints.has(line.address) ? "●" : "·",
       hex(line.address),
@@ -145,6 +173,7 @@ function render(s) {
     : {
         paused: "Ready",
         breakpoint: "Breakpoint",
+        watchpoint: "Data watchpoint",
         halted: `Finished · exit ${s.exitCode}`,
         trap: `Trap · cause ${s.cause}`,
       }[s.status] || s.status;
@@ -194,6 +223,13 @@ function render(s) {
           .join(" "),
       ),
     );
+    const ascii = document.createElement("span");
+    ascii.className = "ascii";
+    ascii.textContent = s.memory
+      .slice(i, i + 16)
+      .map((b) => (b >= 32 && b < 127 ? String.fromCharCode(b) : "."))
+      .join("");
+    row.append(ascii);
     $("memory").append(row);
   }
   $("console").textContent = s.console || "Waiting for UART output…";
@@ -237,7 +273,14 @@ function render(s) {
     row.append(track);
     $("wave").append(row);
   }
-  renderPeripheral(s.peripheral);
+  renderPeripheral(s.peripherals ?? (s.peripheral ? [s.peripheral] : []));
+  renderDiagnostics();
+  $("csrs").replaceChildren();
+  for (const [name, value] of Object.entries(s.csr)) {
+    const cell = document.createElement("span");
+    cell.textContent = `${name}  ${hex(value)}`;
+    $("csrs").append(cell);
+  }
   renderListing();
   buttons();
 }
@@ -253,6 +296,11 @@ function handleWorkerMessage({ data }) {
     busy = false;
     if (currentElf) load(currentElf);
     else compile();
+    worker.postMessage({
+      type: "diagnostic",
+      enabled: $("diagnostic-mode").checked,
+      fetch: $("diagnostic-fetch").checked,
+    });
     buttons();
     return;
   }
@@ -266,13 +314,31 @@ function handleWorkerMessage({ data }) {
   }
   if (data.type === "state") {
     if (pendingPeripheral && data.request === "attach") {
-      peripheralImage = pendingPeripheral;
+      const image = {
+        buffer: pendingPeripheral.buffer,
+        base: pendingPeripheral.base,
+        name: pendingPeripheral.name,
+      };
+      peripheralImages = peripheralImages.filter((d) => d.base !== image.base);
+      peripheralImages.push(image);
+      if (pendingPeripheral.save)
+        saveAsset({
+          id: `wasm:${image.name}`,
+          type: "wasm",
+          name: image.name,
+          buffer: image.buffer,
+        });
       pendingPeripheral = undefined;
     }
-    if (!data.state.peripheral && !pendingPeripheral)
-      peripheralImage = undefined;
+    const activeBases = new Set(
+      (data.state.peripherals ?? []).map((d) => d.base),
+    );
+    peripheralImages = peripheralImages.filter((d) => activeBases.has(d.base));
     busy = Boolean(pendingPeripheral);
-    if (["halted", "trap", "breakpoint"].includes(data.state.status)) pause();
+    if (
+      ["halted", "trap", "breakpoint", "watchpoint"].includes(data.state.status)
+    )
+      pause();
     render(data.state);
     if (running) {
       const token = generation;
@@ -331,8 +397,12 @@ $("example").onchange = () => {
 $("editor").oninput = () => {
   pause();
   invalidateComparison();
-  dirty = true;
-  message("Source changed. Assemble & load to apply it.");
+  dirty = !currentElf;
+  message(
+    currentElf
+      ? "Assembly edited. Assemble to replace the active ELF."
+      : "Source changed. Assemble & load to apply it.",
+  );
   buttons();
 };
 $("editor").onkeydown = (e) => {
@@ -347,25 +417,48 @@ $("editor").onkeydown = (e) => {
     $("editor").dispatchEvent(new Event("input"));
   }
 };
-$("elf").onchange = async (e) => {
-  const file = e.target.files[0];
-  if (!file) return;
+async function openElf(file) {
   try {
     if (file.size > 4 * 1024 * 1024) throw Error("ELF exceeds 4 MiB");
-    const program = loadElf(await file.arrayBuffer());
-    load(program);
-    message(`Loaded ${file.name}. ELF reset uses the same image.`);
+    const buffer = await file.arrayBuffer();
+    const program = loadElf(buffer);
+    program.name = file.name;
     currentElf = program;
-    $("example-description").textContent =
-      `ELF image: ${file.name}. The editor is separate; assemble it to switch back to source.`;
+    load(program);
+    $("assembly-editor").open = false;
+    message(`Loaded ${file.name}. Reset reloads this ELF image.`);
+    await saveAsset({
+      id: `elf:${file.name}`,
+      type: "elf",
+      name: file.name,
+      buffer,
+    });
   } catch (error) {
     message(error.message, true);
   }
-  e.target.value = "";
+}
+$("elf").onchange = async (event) => {
+  const file = event.target.files[0];
+  if (file) await openElf(file);
+  event.target.value = "";
 };
+for (const kind of ["dragenter", "dragover"])
+  $("elf-drop").addEventListener(kind, (event) => {
+    event.preventDefault();
+    $("elf-drop").classList.add("dragging");
+  });
+$("elf-drop").addEventListener("dragleave", () =>
+  $("elf-drop").classList.remove("dragging"),
+);
+$("elf-drop").addEventListener("drop", (event) => {
+  event.preventDefault();
+  $("elf-drop").classList.remove("dragging");
+  if (ready && !busy && event.dataTransfer.files[0])
+    openElf(event.dataTransfer.files[0]);
+});
 $("reset").onclick = () => {
-  if (currentElf && !dirty) load(currentElf);
-  else compile();
+  if (currentElf) load(currentElf);
+  else if (activeProgram) load(activeProgram);
 };
 $("assemble").onclick = compile;
 $("radix").onclick = () => {
@@ -493,43 +586,77 @@ $("compare").onclick = () => {
     invalidateComparison();
     message("Comparison worker failed to load.", true);
   };
-  comparisonWorker.postMessage({ program, peripheral: peripheralImage });
+  comparisonWorker.postMessage({ program, peripheral: peripheralImages });
 };
-function renderPeripheral(device) {
+function renderPeripheral(devices) {
   $("peripheral-state").replaceChildren();
-  if (!device) {
-    $("peripheral-status").textContent =
-      "No module attached. The example counts simulated clocks and rotates an 8-bit GPIO pattern.";
-    return;
+  $("peripheral-status").textContent = devices.length
+    ? `${devices.length} device(s) attached · ${devices.reduce((n, d) => n + d.size, 0)} bytes mapped`
+    : "No module attached.";
+  for (const device of devices) {
+    const card = document.createElement("article");
+    card.className = "device-card";
+    const heading = document.createElement("div");
+    heading.className = "device-heading";
+    const title = document.createElement("strong");
+    title.textContent = device.name;
+    const address = document.createElement("span");
+    address.textContent = `0x${hex(device.base)} · ${device.size} bytes`;
+    const detach = document.createElement("button");
+    detach.textContent = "Detach";
+    detach.disabled = busy;
+    detach.onclick = () => detachPeripheral(device.base);
+    heading.append(title, address, detach);
+    card.append(heading);
+    if (device.words.length) {
+      const bits = document.createElement("div");
+      bits.className = "gpio-bits";
+      for (let bit = 7; bit >= 0; bit--) {
+        const led = document.createElement("span");
+        led.className =
+          "gpio-bit" + ((device.words[0] >> bit) & 1 ? " on" : "");
+        led.textContent = bit;
+        bits.append(led);
+      }
+      const label = document.createElement("small");
+      label.textContent = "WORD 0 · LOW 8 BITS";
+      bits.append(label);
+      card.append(bits);
+      for (const [index, word] of device.words.entries()) {
+        const item = document.createElement("span");
+        item.className = "peripheral-word";
+        item.textContent = `+0x${(index * 4).toString(16).padStart(2, "0")}  ${hex(word)} / ${word}`;
+        card.append(item);
+      }
+    } else {
+      card.append(
+        "No inspection export. Use the diagnostic bus log to observe accesses.",
+      );
+    }
+    $("peripheral-state").append(card);
   }
-  $("peripheral-status").textContent =
-    `${device.name} · 0x${hex(device.base)} · ${device.size} bytes`;
-  if (!device.words.length) {
-    $("peripheral-state").textContent =
-      "This module does not export an inspection view.";
-    return;
-  }
-  const bits = document.createElement("div");
-  bits.className = "gpio-bits";
-  for (let bit = 7; bit >= 0; bit--) {
-    const led = document.createElement("span");
-    led.className = "gpio-bit" + ((device.words[0] >> bit) & 1 ? " on" : "");
-    led.textContent = String(bit);
-    led.title = `Word 0, bit ${bit}`;
-    bits.append(led);
-  }
-  const label = document.createElement("small");
-  label.textContent = "WORD 0 · LOW 8 BITS";
-  bits.append(label);
-  $("peripheral-state").append(bits);
-  for (const [index, word] of device.words.entries()) {
-    const item = document.createElement("span");
-    item.className = "peripheral-word";
-    item.textContent = `+0x${(index * 4).toString(16).padStart(2, "0")}  ${hex(word)}  /  ${word}`;
-    $("peripheral-state").append(item);
-  }
+  const rows = [
+    ["0x00000000–0x0000FFFF", "RAM", "64 KiB"],
+    ["0xF0000000", "UART", "Write byte"],
+    ["0xF0000004", "Exit", "Write code"],
+    ...devices.map((d) => [
+      `0x${hex(d.base)}–0x${hex(d.base + d.size - 1)}`,
+      d.name,
+      `${d.size} bytes`,
+    ]),
+  ];
+  $("address-map").replaceChildren(
+    makeTable(["Address", "Target", "Size / operation"], rows),
+  );
 }
-async function attachPeripheral(buffer, name) {
+function detachPeripheral(base) {
+  pause();
+  invalidateComparison();
+  busy = true;
+  worker.postMessage({ type: "detach", base });
+  buttons();
+}
+async function attachPeripheral(buffer, name, save = false) {
   const base = Number($("peripheral-base").value);
   if (!Number.isInteger(base)) {
     message("Enter a valid MMIO base address.", true);
@@ -538,7 +665,7 @@ async function attachPeripheral(buffer, name) {
   pause();
   invalidateComparison();
   busy = true;
-  pendingPeripheral = { buffer, base, name };
+  pendingPeripheral = { buffer, base, name, save };
   worker.postMessage({ type: "attach", ...pendingPeripheral });
   buttons();
 }
@@ -561,20 +688,13 @@ $("peripheral-file").onchange = async (event) => {
   if (!file) return;
   try {
     if (file.size > 4 * 1024 * 1024) throw Error("Peripheral exceeds 4 MiB");
-    await attachPeripheral(await file.arrayBuffer(), file.name);
+    await attachPeripheral(await file.arrayBuffer(), file.name, true);
   } catch (error) {
     message(error.message, true);
   }
   event.target.value = "";
 };
-$("peripheral-detach").onclick = () => {
-  pause();
-  invalidateComparison();
-  busy = true;
-  peripheralImage = undefined;
-  worker.postMessage({ type: "detach" });
-  buttons();
-};
+$("peripheral-detach").onclick = () => detachPeripheral();
 $("peripheral-demo").onclick = () => {
   $("example").value = "peripheral";
   $("editor").value = examples.peripheral.source;
@@ -604,9 +724,291 @@ function startWorker() {
   worker.postMessage({
     type: "init",
     profile: $("profile").value,
-    peripheral: peripheralImage,
+    peripherals: peripheralImages,
   });
   buttons();
 }
+function makeTable(headers, rows) {
+  const table = document.createElement("table"),
+    thead = document.createElement("thead"),
+    tr = document.createElement("tr");
+  for (const text of headers) {
+    const th = document.createElement("th");
+    th.textContent = text;
+    tr.append(th);
+  }
+  thead.append(tr);
+  table.append(thead);
+  const body = document.createElement("tbody");
+  for (const cells of rows) {
+    const row = document.createElement("tr");
+    for (const text of cells) {
+      const td = document.createElement("td");
+      td.textContent = text;
+      row.append(td);
+    }
+    body.append(row);
+  }
+  table.append(body);
+  return table;
+}
+function renderProgram(program) {
+  $("program-name").textContent = program.name ?? "Assembly editor";
+  $("program-info").textContent =
+    `${program.format ?? "Assembly"} · entry 0x${hex(program.entry)} · ${program.segments.reduce((n, s) => n + s.bytes.length, 0)} bytes loaded${program.abi ? ` · ${program.abi}` : ""}`;
+  $("elf-segments").replaceChildren();
+  if (program.format === "ELF32")
+    $("elf-segments").append(
+      makeTable(
+        ["Segment address", "File bytes", "RAM bytes", "Flags"],
+        program.segments.map((s) => [
+          `0x${hex(s.address)}`,
+          s.fileSize,
+          s.memorySize,
+          `${s.flags & 4 ? "R" : "-"}${s.flags & 2 ? "W" : "-"}${s.flags & 1 ? "X" : "-"}`,
+        ]),
+      ),
+    );
+}
+$("watchpoint-form").onsubmit = (event) => {
+  event.preventDefault();
+  const address = Number($("watchpoint-address").value);
+  if (!Number.isInteger(address) || address < 0 || address > 0xffffffff) {
+    message("Enter a data watchpoint address from 0 to 0xffffffff.", true);
+    return;
+  }
+  pause();
+  worker.postMessage({
+    type: "watchpoint",
+    address,
+    access: $("watchpoint-access").value,
+  });
+};
+$("watchpoint-clear").onclick = () => {
+  pause();
+  worker.postMessage({ type: "watchpoint", address: null });
+};
+const trapNames = {
+  0: "Instruction address misaligned",
+  1: "Instruction access fault",
+  2: "Illegal instruction",
+  3: "Breakpoint instruction",
+  4: "Load address misaligned",
+  5: "Load access fault",
+  6: "Store address misaligned",
+  7: "Store access fault",
+  11: "Environment call from M-mode",
+};
+function renderDiagnostics() {
+  if (!state) return;
+  $("watchpoint-status").textContent = state.watchpoint
+    ? `${state.watchpoint.access} at 0x${hex(state.watchpoint.address)} · stops after the accepting clock edge`
+    : "No data watchpoint";
+  const kind = $("log-kind").value,
+    filter = $("log-filter").value.toLowerCase();
+  $("diagnostic-log").replaceChildren();
+  for (const event of [...state.events].reverse()) {
+    if (
+      kind &&
+      !(kind === "device"
+        ? event.kind.startsWith("device-")
+        : event.kind === kind)
+    )
+      continue;
+    if (
+      filter &&
+      !`${JSON.stringify(event)} ${hex(event.address ?? 0)} ${hex(event.pc ?? 0)}`
+        .toLowerCase()
+        .includes(filter)
+    )
+      continue;
+    const details = ["memory", "mmio", "fetch"].includes(event.kind)
+      ? `${event.operation ?? "fetch"}${event.width ? event.width * 8 : ""} ${event.data === null ? "—" : `0x${hex(event.data)}`} · ${event.response} · ${event.target ?? "instruction bus"}${event.pc !== undefined ? ` · PC 0x${hex(event.pc)}` : ""}`
+      : event.kind === "retire"
+        ? event.changes
+            .map((c) => `x${c.register}: ${hex(c.before)} → ${hex(c.after)}`)
+            .join("; ") || "No register write"
+        : event.kind === "trap"
+          ? `${trapNames[event.cause] ?? "Exception"}; cause ${event.cause}; value 0x${hex(event.value)}`
+          : JSON.stringify(
+              Object.fromEntries(
+                Object.entries(event).filter(
+                  ([k]) =>
+                    !["sequence", "cycle", "kind", "pc", "address"].includes(k),
+                ),
+              ),
+            );
+    const row = document.createElement("tr");
+    if (event.kind === "trap" || event.response === "error")
+      row.className = "fault";
+    for (const text of [
+      `#${event.sequence} / ${event.cycle}`,
+      event.kind,
+      event.address !== undefined
+        ? `0x${hex(event.address)}`
+        : event.pc !== undefined
+          ? `0x${hex(event.pc)}`
+          : "—",
+      details,
+    ]) {
+      const cell = document.createElement("td");
+      cell.textContent = text;
+      row.append(cell);
+    }
+    $("diagnostic-log").append(row);
+  }
+  $("log-summary").textContent =
+    `${state.diagnostic ? "Diagnostic capture enabled" : "Standard event capture"} · ${state.events.length} recent events received / ${state.retainedEvents} retained · ${state.droppedEvents} events discarded by retention limit`;
+  const trap = [...state.events].reverse().find((e) => e.kind === "trap");
+  $("trap-detail").hidden = !trap;
+  if (trap)
+    $("trap-detail").textContent =
+      `${trapNames[trap.cause] ?? "Exception"} · faulting PC 0x${hex(trap.pc)} · cause ${trap.cause} · trap value 0x${hex(trap.value)}`;
+}
+for (const id of ["diagnostic-mode", "diagnostic-fetch"])
+  $(id).onchange = () => {
+    pause();
+    worker.postMessage({
+      type: "diagnostic",
+      enabled: $("diagnostic-mode").checked,
+      fetch: $("diagnostic-fetch").checked,
+    });
+  };
+$("clear-log").onclick = () => {
+  pause();
+  worker.postMessage({ type: "clear-log" });
+};
+$("log-kind").onchange = renderDiagnostics;
+$("log-filter").oninput = renderDiagnostics;
+$("breakpoint-form").onsubmit = (event) => {
+  event.preventDefault();
+  const address = Number($("breakpoint-address").value);
+  if (
+    !Number.isInteger(address) ||
+    address < 0 ||
+    address >= 65536 ||
+    address % 2
+  ) {
+    message("Use a halfword-aligned breakpoint address in RAM.", true);
+    return;
+  }
+  pause();
+  breakpoints.add(address);
+  renderListing();
+};
+function showTab(name) {
+  if (
+    ![
+      "debugger",
+      "devices",
+      "diagnostics",
+      "compare",
+      "guide",
+      "about",
+    ].includes(name)
+  )
+    name = "debugger";
+  for (const tab of document.querySelectorAll("[data-tab]")) {
+    const selected = tab.dataset.tab === name;
+    tab.setAttribute("aria-selected", selected);
+    tab.tabIndex = selected ? 0 : -1;
+    $("view-" + tab.dataset.tab).hidden = !selected;
+  }
+  history.replaceState(null, "", `#${name}`);
+}
+for (const tab of document.querySelectorAll("[data-tab]")) {
+  tab.onclick = () => showTab(tab.dataset.tab);
+  tab.onkeydown = (event) => {
+    if (!["ArrowLeft", "ArrowRight"].includes(event.key)) return;
+    event.preventDefault();
+    const tabs = [...document.querySelectorAll("[data-tab]")],
+      index = tabs.indexOf(tab),
+      next =
+        tabs[
+          (index + (event.key === "ArrowRight" ? 1 : tabs.length - 1)) %
+            tabs.length
+        ];
+    showTab(next.dataset.tab);
+    next.focus();
+  };
+}
+$("device-guide").onclick = () => {
+  showTab("guide");
+  $("mmio-guide").scrollIntoView({ block: "start" });
+};
+$("module-source").parentElement.ontoggle = async (event) => {
+  if (!event.target.open || $("module-source").dataset.loaded) return;
+  try {
+    const response = await fetch("./peripherals/pulse-counter.c");
+    if (!response.ok) throw Error("Source unavailable");
+    $("module-source").textContent = await response.text();
+    $("module-source").dataset.loaded = "true";
+  } catch (error) {
+    $("module-source").textContent = error.message;
+  }
+};
+let savedAssets = [];
+async function refreshLibrary() {
+  try {
+    savedAssets = await assets("list");
+    for (const [id, type] of [
+      ["saved-elf", "elf"],
+      ["saved-device", "wasm"],
+    ]) {
+      const select = $(id),
+        previous = select.value;
+      select.replaceChildren();
+      const empty = document.createElement("option");
+      empty.value = "";
+      empty.textContent =
+        type === "elf" ? "Choose a saved executable" : "Choose a saved module";
+      select.append(empty);
+      for (const asset of savedAssets.filter((a) => a.type === type)) {
+        const option = document.createElement("option");
+        option.value = asset.id;
+        option.textContent = asset.name;
+        select.append(option);
+      }
+      select.value = previous;
+    }
+  } catch {
+    message(
+      "Browser storage is unavailable. File loading still works; the local library cannot be saved.",
+      true,
+    );
+  }
+}
+async function saveAsset(asset) {
+  try {
+    await assets("put", asset);
+    await refreshLibrary();
+  } catch {
+    message(
+      "File loaded for this session; browser storage could not save it.",
+      true,
+    );
+  }
+}
+$("load-saved-elf").onclick = () => {
+  const asset = savedAssets.find((a) => a.id === $("saved-elf").value);
+  if (asset) openElf(new File([asset.buffer], asset.name));
+};
+$("load-saved-device").onclick = () => {
+  const asset = savedAssets.find((a) => a.id === $("saved-device").value);
+  if (asset) attachPeripheral(asset.buffer, asset.name);
+};
+for (const [button, select] of [
+  ["delete-saved-elf", "saved-elf"],
+  ["delete-saved-device", "saved-device"],
+])
+  $(button).onclick = async () => {
+    const id = $(select).value;
+    if (id) {
+      await assets("delete", id);
+      await refreshLibrary();
+    }
+  };
+showTab(location.hash.slice(1));
+refreshLibrary();
 $("profile").onchange = startWorker;
 startWorker();

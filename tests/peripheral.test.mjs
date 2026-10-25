@@ -89,3 +89,24 @@ test("selected counting demo runs on every CPU profile with its own peripheral i
   for (const result of results) assert.equal(result.status, "halted");
   assert.ok(results.slice(1).some((result) => result.firstDivergence !== null));
 });
+
+test("multiple MMIO instances route independently and reject overlaps atomically", async () => {
+  const devices = new PeripheralBus();
+  await devices.attach(buffer, base, "first");
+  await devices.attach(buffer, base + 0x100, "second");
+  devices.dispatch(bus(base, 0x11, 1));
+  devices.dispatch(bus(base + 0x100, 0x22, 1));
+  assert.equal(devices.dispatch(bus(base)).data, 0x11);
+  assert.equal(devices.dispatch(bus(base + 0x100)).data, 0x22);
+  await assert.rejects(
+    () => devices.attach(buffer, base + 4, "overlap"),
+    /overlaps/,
+  );
+  assert.equal(devices.snapshots().length, 2);
+  await devices.attach(buffer, base, "replacement");
+  assert.equal(devices.snapshots().length, 2);
+  assert.equal(devices.dispatch(bus(base + 0x100)).data, 0x22);
+  devices.detach(base);
+  assert.equal(devices.dispatch(bus(base)).hit, 0);
+  assert.equal(devices.snapshots().length, 1);
+});

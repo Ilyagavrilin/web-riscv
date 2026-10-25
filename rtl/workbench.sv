@@ -11,7 +11,11 @@ module workbench (
     output logic [31:0] reg_data,
     output logic [31:0] pc, retired_pc,
     output logic retired, trap,
-    output logic [31:0] cause,
+    output logic [31:0] cause, trap_value,
+    output logic [31:0] mstatus, mepc, mtval, mcause,
+    output logic ready,
+    output logic [31:0] instruction_data, data_read,
+    output logic [1:0] instruction_response, data_response,
     output logic uart_valid, exit_valid,
     output logic [7:0] uart_data,
     output logic [31:0] exit_code,
@@ -27,6 +31,15 @@ module workbench (
     type_scr1_mem_width_e width;
     logic core_reset;
 
+    assign ready = core_reset;
+    assign instruction_data = imem_rdata;
+    assign instruction_response = imem_resp;
+    assign data_read = dmem_rdata;
+    assign data_response = dmem_resp;
+    assign mstatus = core.i_pipe_top.i_pipe_csr.csr_mstatus;
+    assign mepc = core.i_pipe_top.i_pipe_csr.csr_mepc;
+    assign mtval = core.i_pipe_top.i_pipe_csr.csr_mtval_ff;
+    assign mcause = {core.i_pipe_top.i_pipe_csr.csr_mcause_i_ff, 27'b0, core.i_pipe_top.i_pipe_csr.csr_mcause_ec_ff};
     assign host_read = memory[host_addr];
     assign dmem_write = dmem_cmd == SCR1_MEM_CMD_WR;
     assign dmem_width = width;
@@ -41,6 +54,7 @@ module workbench (
         retired <= rst_n && core_reset && (core.i_pipe_top.instret && !core.i_pipe_top.exu2csr_take_exc);
         retired_pc <= pc;
         trap <= rst_n && core_reset && core.i_pipe_top.exu2csr_take_exc;
+        trap_value <= core.i_pipe_top.exu2csr_trap_val;
         cause <= {28'b0, core.i_pipe_top.exu2csr_exc_code};
         uart_valid <= 0;
         exit_valid <= 0;

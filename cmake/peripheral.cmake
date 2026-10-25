@@ -12,3 +12,5 @@ target_link_options(pulse_counter PRIVATE
   "-sEXPORTED_FUNCTIONS=[\"_mmio_abi_version\",\"_mmio_size\",\"_mmio_reset\",\"_mmio_read\",\"_mmio_write\",\"_mmio_tick\",\"_mmio_inspect\"]"
 )
 install(TARGETS pulse_counter RUNTIME DESTINATION .)
+
+install(FILES peripherals/pulse-counter.c DESTINATION .)
