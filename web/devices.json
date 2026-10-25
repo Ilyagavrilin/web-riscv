@@ -11,7 +11,7 @@
     "source": "timer.cpp",
     "base": "0x40000100",
     "demo": "timer",
-    "description": "One-shot or periodic timer with a sticky compare flag. Registers: control (enable/periodic), period, elapsed, status (write one to clear). SystemC SC_METHOD example."
+    "description": "One-shot or periodic timer with a level interrupt. Control: enable bit 0, periodic bit 1, IRQ enable bit 2. Status is write one to clear."
   },
   "mailbox": {
     "name": "Clocked mailbox FIFO",
@@ -19,5 +19,12 @@
     "base": "0x40000200",
     "demo": "mailbox",
     "description": "Transmit a word; the next rising edge places it in an eight-word receive FIFO. Registers: TX, RX, status, control. Reading RX pops; inspection never pops. SystemC SC_METHOD example."
+  },
+  "dma": {
+    "name": "TLM DMA engine",
+    "source": "dma.cpp",
+    "base": "0x40000300",
+    "demo": "dma",
+    "description": "Copy RAM words through a clocked TLM initiator. Registers: source, destination, word count, control (start/IRQ enable), status (busy/done/error), completed words. CPU data accesses have priority."
   }
 }

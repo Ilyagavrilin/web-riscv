@@ -43,7 +43,7 @@ The interface uses larger controls and monospace data views, with separate **Deb
 - Imported ELF and Wasm files are saved in IndexedDB libraries in the current browser origin. Reload them without selecting files again, or remove the saved copy. File loading still works when browser storage is unavailable. No files leave the browser.
 - Devices supports multiple independent MMIO windows and individual detach/replacement, plus live register inspection and an address map.
 - Diagnostics captures accepted read/write transactions, widths, values, responses, current PC, register changes at retirement, UART, traps and device lifecycle events. Fetch logging is optional. Event filtering, JSON export and sampled bus VCD are available.
-- Data watchpoints stop after an accepted transaction covers the selected byte, with read/write filtering. Continue to complete any pending instruction. Faulting accesses may raise a trap instead.
+- CPU data watchpoints stop after an accepted transaction covers the selected byte, with read/write filtering. Continue to complete any pending instruction. Faulting accesses may raise a trap instead.
 - Machine CSRs include mstatus, mepc, mcause and mtval, observed directly from RTL. Trap events identify faulting PC, cause and trap value.
 - Compare executes the same binary and attached device set across all three profiles and reports final-state and retirement differences.
 
@@ -64,7 +64,7 @@ Select **GPIO + cycle counter**, leave its base at `0x40000000`, and click **Att
 | `0x08` | Counter  | Active clocks, read/write, wraps at 32 bits          |
 | `0x0c` | Control  | Bit 0 enables counting and rotation                  |
 
-The GPIO, timer and mailbox examples are actual SystemC `SC_METHOD` modules, linked against the official Accellera 3.0.2 kernel. Their sources are in `peripherals/*.cpp`. Build it separately with `nix build .#pulse-counter`; the normal site build includes it automatically. The **Load your own module** file picker attaches a custom module. Attaching or replacing a module resets that device while preserving CPU registers, RAM, and the clock count. Detaching restores bus errors for its address range. Program reset also resets the attached device; profile switching creates a fresh CPU and reattaches the same module. Comparison creates an independent copy for each profile.
+The GPIO, timer, mailbox and DMA examples are actual SystemC `SC_METHOD` modules, linked against the official Accellera 3.0.2 kernel. Their sources are in `peripherals/*.cpp`. Build it separately with `nix build .#pulse-counter`; the normal site build includes it automatically. The **Load your own module** file picker attaches a custom module. Attaching or replacing a module resets that device while preserving CPU registers, RAM, and the clock count. Detaching restores bus errors for its address range. Program reset also resets the attached device; profile switching creates a fresh CPU and reattaches the same module. Comparison creates an independent copy for each profile.
 
 ### SystemC authoring API
 
@@ -107,7 +107,7 @@ Additional examples:
 | `timer`   | `0x40000100` | One-shot or periodic match after a programmed number of clock edges; sticky W1C flag           |
 | `mailbox` | `0x40000200` | Stage TX, transfer on a clock edge into an eight-word RX FIFO, read-to-pop RX, sticky overflow |
 
-Both have selectable demo programs that store results at `0x1000`. The timer demo stores elapsed `64` and match `1`; the mailbox demo stores `17`, `34`, `51`. Full register maps, compile steps, source downloads and the SDK reference are in the site's Guide tab.
+The timer and mailbox have selectable demo programs that store results at `0x1000`. The timer demo stores elapsed `64` and match `1`; the mailbox demo stores `17`, `34`, `51`. Full register maps, compile steps, source downloads and the SDK reference are in the site's Guide tab.
 
 The version 1 ABI uses these Wasm exports, with unsigned 32-bit parameters and results:
 
@@ -123,7 +123,53 @@ uint32_t mmio_inspect(uint32_t aligned_offset);      // Optional, side-effect fr
 
 SystemC modules use a narrow host for standard I/O and an empty environment; filesystem, network, wall-clock and thread imports are not provided. The loader calls `_initialize` when exported, validates the ABI and window, and resets the new instance before replacing the previous one. Failed validation leaves the previous device attached. Windows must be word-aligned, 4–65,536 bytes long, and outside RAM and the built-in UART/exit registers. Multiple non-overlapping windows can be attached. Reusing a base replaces that instance; an overlap at a different base is rejected.
 
-`width` is 1, 2, or 4 bytes. Accesses are little-endian and naturally aligned; the bus rejects accesses crossing the window. Read/write functions run once for each accepted data-bus request, before its rising edge. `mmio_tick(1)` runs after each simulated rising edge, including the edge enabling the device. Inspection does not issue bus transactions. Modules execute in a worker; external interrupt signaling, asynchronous host I/O, and Wasm component/WASI interfaces are outside this ABI.
+`width` is 1, 2, or 4 bytes. Accesses are little-endian and naturally aligned; the bus rejects accesses crossing the window. Read/write functions run once for each accepted data-bus request, before its rising edge. `mmio_tick(1)` runs after each simulated rising edge, including the edge enabling the device. Inspection does not issue bus transactions. Modules execute in a worker. Optional ABI v1 extensions expose interrupt levels, register errors and nonblocking bus requests; existing modules remain compatible. Asynchronous host I/O and Wasm component interfaces are outside this ABI.
+
+## Interrupts and TLM bus adapters
+
+Devices → Clock and interrupts configures memory latency, a 16-bit external mask, software IRQ, and an optional stop after interrupt entry. At attach time choose a device IRQ line from 0–15, or −1 to disconnect it. Manual and device levels are ORed. MAX and BASE use SCR1’s IPIC; MIN routes the OR of all external lines to its single external input. Firmware must configure `mtvec`, `mie`, and `mstatus.MIE`.
+
+For an active-high level IPIC source, write its index to `0xBF6`, then `2` to `0xBF7`. Enable `mie.MEIE` (bit 11) and global interrupts. Claim using a write to `0xBF5`; acknowledge the peripheral and write `0xBF4` before `mret`. MIN omits the IPIC operations. The **Timer interrupt + mret** example performs this sequence for IRQ 0; the assembler defines `SCR1_HAS_IPIC` for the selected profile. Timer control bit 2 enables its IRQ, which remains high until the match status is cleared.
+
+SCR1 trap vectors are 64-byte aligned. BASE fixes the low 16 address bits and MIN fixes the complete vector base at `0x1c0`. The assembler linker script reserves up to 64 bytes for `.vectors` there, before the reset entry at `0x200`; the example installs a jump to its handler. Custom ELFs must provide an appropriate vector themselves.
+
+Override `bool irq() const noexcept` to expose a device level. The engine samples levels before each CPU edge, then delivers accepted DMA responses and advances the device kernel. A new device interrupt becomes visible to the CPU on the following edge. Shared interrupt lines require firmware to inspect all sources.
+
+### DMA example
+
+Attach **TLM DMA engine** at `0x40000300` and load its demo. It copies four words from `0x1000` to `0x1100` without CPU copy loads/stores and records the completed word count at `0x1010`. Diagnostic mode logs every accepted DMA beat, response and waiting time.
+
+| Offset | Register    | Behavior                                                |
+| ------ | ----------- | ------------------------------------------------------- |
+| `0x00` | Source      | Word-aligned RAM address                                |
+| `0x04` | Destination | Word-aligned RAM address                                |
+| `0x08` | Length      | 1–16,384 words; both ranges must fit RAM                |
+| `0x0C` | Control     | Bit 0 starts; bit 1 enables IRQ                         |
+| `0x10` | Status      | Busy bit 0, done bit 1, error bit 2; done/error are W1C |
+| `0x14` | Progress    | Completed destination words                             |
+
+Source, destination and length are latched on start and cannot change while busy. Further start commands are ignored while busy; IRQ enable remains writable. Invalid configuration sets error without a transfer. Completion or error asserts IRQ when enabled. Copy proceeds forward, so overlapping ranges have forward-copy semantics. Reset cancels pending work and clears state.
+
+### Writing a bus master
+
+Derive from `scr1::ClockedInitiator<N>` in `scr1/initiator.hpp`. Use `begin_read(address)` or `begin_write(address, value)` in an `SC_METHOD`. At a later edge, check `response_ready()`, read `response_ok()` and `response_data()`, and call `consume_response()` before issuing another request. The DMA source is a complete example of this state machine.
+
+The helper owns an actual TLM-2.0 nonblocking initiator socket with one outstanding 32-bit generic payload. The host target returns TLM_ACCEPTED for BEGIN_REQ, holds a payload reference until arbitration, and sends BEGIN_RESP, implicitly ending the request phase. The initiator returns TLM_COMPLETED to end the response. Reset releases the pending reference before resetting device state. This path uses method processes without coroutine conversion threads.
+
+CPU data transactions have priority at their accepting edges. DMA devices arbitrate round-robin between completed beats, and hold their request until accepted. Continuous CPU traffic can starve DMA. Instruction fetch has an independent read port and reads pre-edge RAM contents if a DMA write shares its edge. DMA supports naturally aligned 1/2/4-byte RAM transfers with the data latency setting; MMIO and out-of-range addresses return bus errors. Detach/replacement cancels the removed instance’s pending request.
+
+`scr1::RegisterTarget` in `scr1/target.hpp` adapts TLM `b_transport` to masked device registers; CPU MMIO traverses this socket. Supported payloads are little-endian, non-streaming 1/2/4-byte transfers with zero annotated delay. DMI, byte-enable arrays, bursts, blocking waits and multiple outstanding requests are outside this subset.
+
+Optional ABI v1 exports:
+
+```c
+uint32_t mmio_irq(void);
+uint32_t mmio_error(void);
+uint32_t mmio_bus_request(uint32_t field);
+void mmio_bus_complete(uint32_t status, uint32_t data);
+```
+
+Request fields: 0 validity (0 none, 1 supported, 2 malformed), 1 write flag, 2 address, 3 data, 4 log2 byte width. Both bus exports must be present together. Keep the request stable until completion; status 1 is success, 2 error. Read data is valid on success. Malformed payloads complete with error. `mmio_error` exposes failure of the last CPU register access. `mmio_irq` has no side effects. The SystemC adapter supplies every export automatically.
 
 ## Platform
 
@@ -134,9 +180,9 @@ SystemC modules use a narrow host for standard I/O and an empty environment; fil
 | `0xf0000000`            | Write a UART byte                   |
 | `0xf0000004`            | Write an exit code to stop          |
 
-Memory replies after one clock; unmapped accesses return bus errors. Loading clears RAM and starts a fresh model. ELF PT_LOAD segments use virtual addresses, and BSS is zero-filled. Programs must be bare-metal executables with their own startup and stack. Select the matching `-march` and ABI (`ilp32` for I, `ilp32e` for E), and link all segments into RAM with entry at `0x200`.
+Instruction and data/DMA acceptance latency is programmable from 1 to 32 clocks in Devices. The default accepts requests on their first edge; responses are registered on that edge. Wait states postpone acceptance, and MMIO side effects occur exactly once. Device clocks continue during stalls. Unmapped accesses return bus errors. Loading clears RAM and starts a fresh model. ELF PT_LOAD segments use virtual addresses, and BSS is zero-filled. Programs must be bare-metal executables with their own startup and stack. Select the matching `-march` and ABI (`ilp32` for I, `ilp32e` for E), and link all segments into RAM with entry at `0x200`.
 
-External interrupts, JTAG, and the timer are held inactive. The bench stops at exceptions before executing a trap handler. A PC breakpoint checks the current PC before a clock and does not patch instructions. Continuing skips that breakpoint until PC changes; use stepping for a self-loop at one address. A step request has a 2,000-clock budget. MMIO exit can stop before the exit store retires.
+External and software interrupts are configurable; JTAG and the core machine-timer input remain inactive. Interrupts enter the firmware handler and support `mret`; Break on interrupt stops after entry. The bench stops at exceptions before executing an exception handler. A PC breakpoint checks the current PC before a clock and does not patch instructions. Continuing skips that breakpoint until PC changes; use stepping for a self-loop at one address. A step request has a 2,000-clock budget. MMIO exit can stop before the exit store retires.
 
 VCD records PC and memory interfaces before rising edges, with one timestamp unit per clock. It is a sampled bus trace, not a complete internal RTL waveform. CPI includes initial clocks leaving reset. UART output retains its last 16 KiB.
 
@@ -158,7 +204,9 @@ The RTL integration lives in `rtl/workbench.sv`, the Wasm ABI in `sim/bridge.cpp
 
 ## GitHub Pages
 
-The Pages workflow runs only through manual `workflow_dispatch`. Select GitHub Actions under Settings → Pages before running it. Local builds and commits do not publish anything.
+The Pages workflow runs only through manual `workflow_dispatch`. By default it validates the flake and builds an artifact without deploying. Future publication requires selecting GitHub Actions under Settings → Pages and checking the workflow’s `deploy` input. Pushes do not trigger it. Local builds and commits do not publish anything.
+
+Serve the `result/` directory on any static HTTP host. CPU simulation, assembly, linking and SystemC execution run entirely in the browser; there is no backend. A private repository needs a GitHub plan that supports Pages for private repositories; repository visibility alone does not make the deployed site private.
 
 ## License
 

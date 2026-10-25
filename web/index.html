@@ -155,7 +155,6 @@
                 <select id="example" aria-label="Example program"></select
                 ><button id="assemble" disabled>Assemble & load</button>
               </div>
-              <p id="example-description" class="hint"></p>
               <label class="sr-only" for="editor">RISC-V assembly source</label
               ><textarea
                 id="editor"
@@ -163,10 +162,6 @@
                 autocapitalize="off"
                 autocomplete="off"
               ></textarea>
-              <p class="hint">
-                Ctrl / ⌘ + Enter to assemble. Loading assembly replaces the
-                active ELF.
-              </p>
             </details>
           </section>
           <section class="panel state">
@@ -177,10 +172,6 @@
             <div id="registers" class="registers"></div>
             <h2 class="subheading">Machine CSRs</h2>
             <div id="csrs" class="csr-grid"></div>
-            <p class="hint">
-              Shaded registers are unavailable in RV32E. Highlighted values
-              changed since the previous update.
-            </p>
           </section>
         </div>
         <div class="lower">
@@ -218,13 +209,42 @@ Waiting for program output.</pre>
         <div class="view-heading">
           <div>
             <h1>MMIO devices</h1>
-            <p>
-              Attach standalone Wasm peripherals to the live CPU bus. Separate
-              address windows run independently.
-            </p>
           </div>
           <button id="device-guide">How to write a module</button>
         </div>
+        <section class="panel">
+          <h2>Clock and interrupts</h2>
+          <form id="platform-form" class="peripheral-controls">
+            <label
+              >Instruction latency
+              <input
+                id="instruction-latency"
+                type="number"
+                min="1"
+                max="32"
+                value="1"
+            /></label>
+            <label
+              >Data / DMA latency
+              <input id="data-latency" type="number" min="1" max="32" value="1"
+            /></label>
+            <label
+              >External IRQ mask
+              <input id="external-mask" value="0x0000" size="10"
+            /></label>
+            <label class="toggle"
+              ><input id="software-irq" type="checkbox" />Software IRQ</label
+            >
+            <label class="toggle"
+              ><input id="stop-on-interrupt" type="checkbox" />Break on
+              interrupt</label
+            >
+            <button id="platform-apply" disabled>Apply</button>
+          </form>
+          <p id="platform-state" role="status">
+            Default timing · IRQ inputs low
+          </p>
+        </section>
         <section class="panel">
           <div class="panel-title">
             <h2>Add or replace a device</h2>
@@ -239,10 +259,17 @@ Waiting for program output.</pre>
             ><label
               >Base address
               <input id="peripheral-base" value="0x40000000" size="12" /></label
+            ><label
+              >IRQ line
+              <input
+                id="peripheral-irq"
+                type="number"
+                min="-1"
+                max="15"
+                value="0" /></label
             ><button id="peripheral-attach" disabled>Attach example</button
-            ><button id="peripheral-demo" disabled>Load counting demo</button>
+            ><button id="peripheral-demo" disabled>Load demo</button>
           </div>
-          <p id="device-description" class="hint"></p>
           <div class="file-row">
             <label for="peripheral-file">Load your own module</label
             ><input
@@ -258,10 +285,6 @@ Waiting for program output.</pre>
             ><button id="load-saved-device">Attach at address</button
             ><button id="delete-saved-device">Remove saved file</button>
           </div>
-          <p class="hint">
-            A different base adds a device. The same base replaces that device
-            after validation. CPU registers and RAM are preserved.
-          </p>
           <p id="peripheral-status" role="status">No module attached.</p>
           <button id="peripheral-detach" disabled>Detach all devices</button>
         </section>
@@ -284,10 +307,6 @@ Waiting for program output.</pre>
         <div class="view-heading">
           <div>
             <h1>Diagnostics</h1>
-            <p>
-              Inspect accepted bus transactions, register changes, exceptions,
-              and module lifecycle events.
-            </p>
           </div>
           <div class="inline">
             <button id="json" disabled>Export JSON</button
@@ -310,6 +329,9 @@ Waiting for program output.</pre>
               <option>trap</option>
               <option>fetch</option>
               <option>uart</option>
+              <option value="dma">DMA transfers</option>
+              <option value="interrupt">Interrupt entry</option>
+              <option value="irq-lines">IRQ lines</option>
               <option value="device">Device lifecycle</option></select
             ><input
               id="log-filter"
@@ -350,11 +372,6 @@ Waiting for program output.</pre>
               <tbody id="diagnostic-log"></tbody>
             </table>
           </div>
-          <p class="hint">
-            Up to 10,000 diagnostic events retained; the table shows the latest
-            200. JSON includes all retained events. Reads and writes are logged
-            at their accepting rising edge. Retirement is a separate event.
-          </p>
         </section>
         <div class="lower">
           <section class="panel">
@@ -380,19 +397,10 @@ Waiting for program output.</pre>
         <div class="view-heading">
           <div>
             <h1>Compare CPU profiles</h1>
-            <p>
-              Execute the same loaded binary and attached devices on all three
-              SCR1 configurations.
-            </p>
           </div>
           <button id="compare" disabled>Compare profiles →</button>
         </div>
         <section class="panel">
-          <p class="hint">
-            Memory latency is identical. Pipeline settings and ISA differ.
-            Shared registers, RAM, UART and exit codes are compared; devices
-            receive independent instances.
-          </p>
           <div id="comparison" class="table-scroll" role="status"></div>
         </section>
       </section>
@@ -407,8 +415,29 @@ Waiting for program output.</pre>
         <nav class="guide-links">
           <a href="#elf-guide">ELF programs</a
           ><a href="#mmio-guide">Custom MMIO modules</a
-          ><a href="#diagnostic-guide">Diagnostics</a>
+          ><a href="#platform-guide">Timing &amp; IRQ</a
+          ><a href="#tlm-guide">DMA / TLM</a
+          ><a href="#diagnostic-guide">Diagnostics</a
+          ><a href="#deployment-guide">Hosting</a>
         </nav>
+        <article class="panel">
+          <h2>Quick start</h2>
+          <ol>
+            <li>Debugger: load an ELF or choose an assembly example.</li>
+            <li>
+              Use Clock +1, Instruction +1, or Run. Click an instruction to set
+              a breakpoint.
+            </li>
+            <li>
+              Devices: attach any peripherals required by the program, at the
+              documented address.
+            </li>
+            <li>
+              Diagnostics: enable capture before running; export JSON for the
+              retained event log.
+            </li>
+          </ol>
+        </article>
         <article id="elf-guide" class="panel">
           <h2>Load a bare-metal ELF</h2>
           <p>
@@ -452,11 +481,10 @@ Waiting for program output.</pre>
           </p>
           <h3>SystemC device SDK</h3>
           <p>
-            All three example devices are real SystemC modules, linked against
-            the pinned Accellera SystemC 3.0.2 kernel. Write C++17 register
-            behavior and an <code>SC_METHOD</code> sensitive to
-            <code>clk.pos()</code>. You do not write Wasm exports or manually
-            call the clock method.
+            The example devices are real SystemC modules, linked against the
+            pinned Accellera SystemC 3.0.2 kernel. Write C++17 register behavior
+            and an <code>SC_METHOD</code> sensitive to <code>clk.pos()</code>.
+            You do not write Wasm exports or manually call the clock method.
           </p>
           <pre><code>#include &lt;scr1/device.hpp&gt;
 class Counter final : public scr1::ClockedDevice&lt;1&gt; {
@@ -515,11 +543,11 @@ cmake --build build/my-device
           </p>
           <h3>New clocked examples</h3>
           <p>
-            <strong>Timer:</strong> +0x00 control (bit 0 enable, bit 1
-            periodic), +0x04 period, +0x08 elapsed, +0x0C sticky match (write 1
-            to clear). Zero period becomes one. One-shot stops at the match;
-            periodic mode resets elapsed. Poll the flag; an external interrupt
-            connection is not present yet.
+            <strong>Timer:</strong> +0x00 control (bit 0 enable, bit 1 periodic,
+            bit 2 IRQ enable), +0x04 period, +0x08 elapsed, +0x0C sticky match
+            (write 1 to clear). Zero period becomes one. One-shot stops at the
+            match; periodic mode resets elapsed. The IRQ stays high until
+            software clears the match flag.
           </p>
           <p>
             <strong>Mailbox:</strong> +0x00 TX, +0x04 RX (read pops), +0x08
@@ -547,7 +575,7 @@ uint32_t mmio_inspect(uint32_t aligned_offset); // optional: no side effects</co
           </p>
           <h3>Build and attach</h3>
           <p>
-            Start with the working C example below. The CMake target links
+            Start with the working SystemC example below. The CMake target links
             SystemC and exports the device ABI automatically; module authors
             write neither Wasm exports nor JavaScript glue.
           </p>
@@ -579,7 +607,7 @@ uint32_t mmio_inspect(uint32_t aligned_offset); // optional: no side effects</co
             >Download built module</a
           >
           <details>
-            <summary>Read the full C implementation</summary>
+            <summary>Read the SystemC implementation</summary>
             <pre
               id="module-source"
             ><code>Open this section to load the SystemC source.</code></pre>
@@ -592,8 +620,201 @@ uint32_t mmio_inspect(uint32_t aligned_offset); // optional: no side effects</co
             failing instance and returns a bus error to SCR1. Other devices
             remain attached. A tick failure pauses execution with an error. Run
             bounded code in callbacks; an infinite callback requires restarting
-            the worker. There is currently no external interrupt, DMA,
-            asynchronous host I/O, or DAP/GDB transport in this ABI.
+            the worker. Asynchronous host I/O and DAP/GDB transport are outside
+            this ABI.
+          </p>
+        </article>
+        <article id="platform-guide" class="panel">
+          <h2>Memory timing and interrupts</h2>
+          <p>
+            Devices → Clock and interrupts sets instruction and data acceptance
+            latency from 1 to 32 CPU clocks. A value of 1 accepts a new request
+            on its first edge. Responses are registered on the accepting edge;
+            longer latency inserts request wait states. RAM, built-in registers
+            and custom MMIO share the data setting. Each SystemC device
+            continues ticking during stalls.
+          </p>
+          <p>
+            The external mask asserts 16 level inputs. Device IRQs are ORed into
+            the same mask using the line selected at attach time; use −1 to
+            disconnect a device. MAX and BASE route these inputs through SCR1's
+            IPIC. MIN has one external interrupt input, driven by the OR of all
+            lines. Software IRQ drives <code>mip.MSIP</code> independently.
+            These controls assert inputs; firmware must enable
+            <code>mie</code> and <code>mstatus.MIE</code>.
+          </p>
+          <p>
+            For IPIC, select a line in <code>0xBF6</code>, then write
+            <code>2</code> to <code>0xBF7</code> to enable an active-high level
+            interrupt. Write any value to <code>0xBF5</code> to claim and
+            <code>0xBF4</code> to finish service. Enable
+            <code>mie.MEIE</code> (bit 11), set <code>mtvec</code>, and enable
+            global interrupts. Clear the device source before returning with
+            <code>mret</code>. MIN skips the IPIC CSRs.
+          </p>
+          <p>
+            Select <strong>Timer interrupt + mret</strong> in the assembly
+            editor after attaching the timer at <code>0x40000100</code> on IRQ
+            0. The handler acknowledges the timer, returns, and stores the
+            interrupt count at <code>0x1000</code>. The linker places
+            <code>.vectors</code> at <code>0x1C0</code> (up to 64 bytes), before
+            the reset entry at <code>0x200</code>. BASE fixes the low 16 bits of
+            the vector base, and MIN fixes the entire base there. Trap vectors
+            require 64-byte alignment. The example uses a vector trampoline;
+            custom ELFs must supply their own. The GNU assembler symbol
+            <code>SCR1_HAS_IPIC</code> selects the correct setup for each
+            profile. Break on interrupt stops after entry; Continue executes the
+            handler. Exceptions still stop execution.
+          </p>
+          <p>
+            Override <code>bool irq() const noexcept</code> in a device to
+            expose its level. Keep it asserted until the appropriate status is
+            acknowledged. Shared lines require firmware to inspect each attached
+            source.
+          </p>
+        </article>
+        <article id="tlm-guide" class="panel">
+          <h2>Clocked DMA and TLM adapters</h2>
+          <p>
+            Attach <strong>TLM DMA engine</strong> at <code>0x40000300</code>,
+            then Load demo. Four words move from <code>0x1000</code> to
+            <code>0x1100</code>; the completed count is stored at
+            <code>0x1010</code>. Enable diagnostic capture to see all eight
+            read/write transactions.
+          </p>
+          <table>
+            <thead>
+              <tr>
+                <th>Offset</th>
+                <th>Register</th>
+                <th>Behavior</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>0x00</td>
+                <td>Source</td>
+                <td>Word-aligned RAM address</td>
+              </tr>
+              <tr>
+                <td>0x04</td>
+                <td>Destination</td>
+                <td>Word-aligned RAM address</td>
+              </tr>
+              <tr>
+                <td>0x08</td>
+                <td>Length</td>
+                <td>1–16,384 words; both ranges must fit RAM</td>
+              </tr>
+              <tr>
+                <td>0x0C</td>
+                <td>Control</td>
+                <td>Bit 0: start command; bit 1: IRQ enable</td>
+              </tr>
+              <tr>
+                <td>0x10</td>
+                <td>Status</td>
+                <td>
+                  Bit 0: busy; bit 1: done; bit 2: error. Done/error are W1C.
+                </td>
+              </tr>
+              <tr>
+                <td>0x14</td>
+                <td>Progress</td>
+                <td>Completed destination words</td>
+              </tr>
+            </tbody>
+          </table>
+          <p>
+            Configuration is latched on start. Source, destination, length and
+            another start are ignored while busy; IRQ enable remains writable.
+            Invalid ranges set error without a transfer. Done or error asserts
+            IRQ when enabled. Copy proceeds forward, one read then one write;
+            overlapping ranges have forward-copy semantics. Reset cancels
+            pending work and clears the registers.
+          </p>
+          <p>
+            Derive a bus master from
+            <code>scr1::ClockedInitiator&lt;N&gt;</code> in
+            <code>scr1/initiator.hpp</code>. Call
+            <code>begin_read(address)</code> or
+            <code>begin_write(address, value)</code> from an SC_METHOD. On a
+            later clock, check <code>response_ready()</code>, inspect
+            <code>response_ok()</code> and <code>response_data()</code>, then
+            call <code>consume_response()</code> before issuing the next
+            request. The helper supports one outstanding 32-bit transaction.
+          </p>
+          <p>
+            The helper uses an actual TLM-2.0 nonblocking initiator socket. The
+            host target accepts BEGIN_REQ and holds the payload until RAM
+            arbitration completes. BEGIN_RESP implicitly ends the request phase,
+            and TLM_COMPLETED finishes the response. The adapter owns one
+            payload reference until completion or reset; response callbacks run
+            before the next device rising edge. No process waits or coroutine
+            stacks are needed.
+          </p>
+          <p>
+            The CPU data port has priority at each accepting edge. Devices
+            arbitrate round-robin between completed transactions; an owner holds
+            its pending request until accepted. A busy CPU can starve DMA.
+            Instruction fetch has an independent read port and sees pre-edge RAM
+            contents when a DMA write shares its edge. DMA accesses only
+            naturally aligned RAM bytes, halfwords or words, using the
+            configured data latency; MMIO and out-of-range requests return
+            errors. Reload or detach cancels the removed device's pending
+            request.
+          </p>
+          <p>
+            <code>scr1::RegisterTarget</code> in
+            <code>scr1/target.hpp</code> adapts TLM <code>b_transport</code> to
+            the same masked register API. The browser adapter uses this target
+            for CPU MMIO. This subset supports little-endian, non-streaming
+            1/2/4-byte transfers with zero annotated delay. DMI, byte-enable
+            arrays, bursts, multiple outstanding requests and blocking waits are
+            unsupported.
+          </p>
+          <p>
+            <a href="./peripherals/dma.cpp" download>DMA example</a> ·
+            <a href="./peripherals/include/scr1/initiator.hpp" download
+              >Initiator helper</a
+            >
+            ·
+            <a href="./peripherals/include/scr1/target.hpp" download
+              >Register target</a
+            >
+          </p>
+          <h3>Optional ABI v1 extensions</h3>
+          <pre><code>uint32_t mmio_irq(void);
+uint32_t mmio_error(void);
+uint32_t mmio_bus_request(uint32_t field);
+void mmio_bus_complete(uint32_t status, uint32_t data);</code></pre>
+          <p>
+            Request fields: 0 valid (0 none, 1 supported, 2 malformed), 1 write
+            flag, 2 address, 3 write data, 4 width encoding (0 byte, 1 halfword,
+            2 word). Requests must stay stable until completion; status is 1
+            success or 2 error, with read data valid on success. Malformed
+            requests complete with error. The request and completion exports
+            must appear together. <code>mmio_error</code> reports failure of the
+            last CPU register access; <code>mmio_irq</code> reports a level
+            without side effects. Older ABI v1 modules remain supported.
+          </p>
+        </article>
+        <article id="deployment-guide" class="panel">
+          <h2>Build and hosting</h2>
+          <pre><code>nix build
+nix develop --command python3 -m http.server 8080 --directory result --bind 127.0.0.1</code></pre>
+          <p>
+            Serve <code>result/</code> on any static HTTP host. All CPU
+            simulation, assembly, linking and device execution happen in browser
+            workers; there is no backend. Uploaded files stay in the browser.
+            Relative asset URLs support a GitHub Pages project subpath.
+          </p>
+          <p>
+            The Pages workflow is manual. Its default run checks and builds a
+            downloadable artifact without publishing. Future publication
+            requires Pages to use GitHub Actions and selecting the workflow's
+            deploy option. Private repository Pages requires an eligible GitHub
+            plan; repository privacy alone does not make the website private.
           </p>
         </article>
         <article id="diagnostic-guide" class="panel">
@@ -653,9 +874,9 @@ uint32_t mmio_inspect(uint32_t aligned_offset); // optional: no side effects</co
           <p>
             MAX, BASE and MIN are upstream recommended configurations. They
             differ in ISA, pipeline bypasses and optional facilities. CPI
-            includes startup clocks with one-clock memory replies; it is not
-            physical chip frequency, area or power. RAM is 64 KiB. External
-            interrupts and JTAG are held inactive. MIN begins with
+            includes startup clocks and the configured memory latency; it is not
+            physical chip frequency, area or power. RAM is 64 KiB. JTAG and the
+            core machine timer input remain inactive. MIN begins with
             zero-initialized two-state model storage, although its hardware
             register file has no reset.
           </p>

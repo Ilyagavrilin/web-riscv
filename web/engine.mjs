@@ -15,10 +15,26 @@ export class Engine {
     this.events = [];
     this.eventSequence = 0;
     this.droppedEvents = 0;
+    this.platform = {
+      instructionLatency: 1,
+      dataLatency: 1,
+      externalMask: 0,
+      softwareIrq: false,
+      stopOnInterrupt: false,
+    };
+    this.load({ entry: 0x200, segments: [] });
   }
   load(program) {
     this.peripherals.reset();
     this.m._reset();
+    this.m._configure(
+      this.platform.instructionLatency,
+      this.platform.dataLatency,
+    );
+    this.interruptCount = this.dmaTransfers = 0;
+    this.lastIrqMask = 0;
+    this.lastSoftwareIrq = false;
+    this.previousDma = null;
     for (let i = 0; i < 65536; i++) this.m._poke(i, 0);
     for (const s of program.segments)
       for (let i = 0; i < s.bytes.length; i++)
@@ -45,6 +61,27 @@ export class Engine {
       bytes: program.segments.reduce((n, s) => n + s.bytes.length, 0),
     });
   }
+  configure(platform) {
+    const next = { ...this.platform, ...platform };
+    for (const key of ["instructionLatency", "dataLatency"])
+      if (!Number.isInteger(next[key]) || next[key] < 1 || next[key] > 32)
+        throw Error("Memory latency must be 1…32 clocks");
+    if (
+      !Number.isInteger(next.externalMask) ||
+      next.externalMask < 0 ||
+      next.externalMask > 65535
+    )
+      throw Error("External IRQ mask must be 0…0xffff");
+    if (
+      typeof next.softwareIrq !== "boolean" ||
+      typeof next.stopOnInterrupt !== "boolean"
+    )
+      throw Error("Invalid interrupt setting");
+    this.platform = next;
+    if (this.cycles !== undefined)
+      this.m._configure(next.instructionLatency, next.dataLatency);
+    this.record("platform", next);
+  }
   record(kind, detail = {}) {
     this.events.push({
       sequence: ++this.eventSequence,
@@ -62,6 +99,31 @@ export class Engine {
   tick() {
     if (this.status === "halted" || this.status === "trap") return;
     const m = this.m;
+    let dma = this.peripherals.busRequest();
+    if (this.previousDma && this.previousDma !== dma) dma = null;
+    this.previousDma = dma;
+    const irqMask = this.platform.externalMask | this.peripherals.irqMask();
+    if (
+      irqMask !== this.lastIrqMask ||
+      this.platform.softwareIrq !== this.lastSoftwareIrq
+    ) {
+      this.record("irq-lines", {
+        cycle: this.cycles + 1,
+        mask: irqMask,
+        software: this.platform.softwareIrq,
+      });
+      this.lastIrqMask = irqMask;
+      this.lastSoftwareIrq = this.platform.softwareIrq;
+    }
+    m._interrupts(irqMask, this.platform.softwareIrq);
+    m._dma_request(
+      Number(Boolean(dma)),
+      dma?.write ?? 0,
+      dma?.invalid ? 0xffffffff : (dma?.address ?? 0),
+      dma?.data ?? 0,
+      dma?.width ?? 0,
+    );
+    m._prepare();
     const bus = {
       cycle: this.cycles + 1,
       pc: m._signal(0) >>> 0,
@@ -72,14 +134,42 @@ export class Engine {
       address: m._signal(13) >>> 0,
       data: m._signal(14) >>> 0,
       width: m._signal(15),
+      fetchAccepted: m._signal(26),
+      dataAccepted: m._signal(27),
+      irqMask,
+      softwareIrq: Number(this.platform.softwareIrq),
+      dmaRequest: Number(Boolean(dma)),
+      dmaAccepted: m._signal(28),
+      dmaAddress: dma?.address ?? 0,
     };
-    const accepted = Boolean(m._signal(16));
+    const accepted = Boolean(bus.dataAccepted);
     const response = this.peripherals.dispatch({
       ...bus,
       request: bus.request && accepted,
     });
     m._mmio_response(response.hit, response.fault, response.data);
     m._tick();
+    if (dma) {
+      dma.waitCycles++;
+      if (bus.dmaAccepted) {
+        const response = m._signal(29),
+          data = m._signal(30) >>> 0;
+        this.peripherals.completeBus(response, data);
+        this.previousDma = null;
+        this.dmaTransfers++;
+        if (this.diagnostic)
+          this.record("dma", {
+            cycle: this.cycles + 1,
+            target: dma.device.name,
+            address: dma.address,
+            operation: dma.write ? "write" : "read",
+            width: 1 << dma.width,
+            data: dma.write ? dma.data : response === 1 ? data : null,
+            response: response === 1 ? "ok" : "error",
+            waitCycles: dma.waitCycles,
+          });
+      }
+    }
     this.peripherals.tick();
     this.cycles++;
     if (this.diagnostic && accepted && bus.request) {
@@ -111,7 +201,7 @@ export class Engine {
         },
       );
     }
-    if (this.diagnostic && this.logFetch && accepted && bus.fetch)
+    if (this.diagnostic && this.logFetch && bus.fetchAccepted)
       this.record("fetch", {
         address: bus.fetchAddress,
         data: m._signal(18) === 1 ? m._signal(17) >>> 0 : null,
@@ -169,6 +259,15 @@ export class Engine {
       this.exitCode = m._signal(8) >>> 0;
       this.record("exit", { code: this.exitCode });
     }
+    if (m._signal(31)) {
+      this.interruptCount++;
+      this.record("interrupt", {
+        pc: m._signal(32) >>> 0,
+        cause: m._signal(25) >>> 0,
+        mask: irqMask,
+      });
+      if (this.platform.stopOnInterrupt) this.status = "interrupt";
+    }
     if (m._signal(3)) {
       this.status = "trap";
       this.cause = m._signal(4);
@@ -198,7 +297,7 @@ export class Engine {
       }
       this.status = "paused";
       this.tick();
-      if (this.status === "watchpoint") break;
+      if (this.status === "watchpoint" || this.status === "interrupt") break;
       if (mode === "cycle" || (mode === "instruction" && this.retired > before))
         break;
     }
@@ -206,6 +305,12 @@ export class Engine {
   }
   snapshot() {
     return {
+      platform: this.platform,
+      interrupts: {
+        count: this.interruptCount ?? 0,
+        mask: this.platform.externalMask | this.peripherals.irqMask(),
+      },
+      dmaTransfers: this.dmaTransfers ?? 0,
       watchpoint: this.watchpoint,
       diagnostic: this.diagnostic,
       events: this.events.slice(-200),
@@ -245,7 +350,7 @@ export class Engine {
       events: this.events,
       history: this.history,
       wave: this.wave,
-      schemaVersion: 2,
+      schemaVersion: 3,
       timing: "bus sampled before rising edge; events numbered at that edge",
     };
   }
@@ -260,6 +365,13 @@ export function toVcd(wave) {
     ["address", 32, "&"],
     ["data", 32, "'"],
     ["width", 2, "("],
+    ["fetchAccepted", 1, ")"],
+    ["dataAccepted", 1, "*"],
+    ["irqMask", 16, "+"],
+    ["dmaRequest", 1, ","],
+    ["dmaAccepted", 1, "-"],
+    ["dmaAddress", 32, "."],
+    ["softwareIrq", 1, "/"],
   ];
   const header = [
     "$timescale 1ns $end",

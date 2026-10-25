@@ -14,21 +14,35 @@ async function handle(data) {
         `./scr1-${data.profile}.mjs`
       );
       engine = new Engine(await createModule(), data.profile);
+      engine.configure(data.platform ?? {});
+      engine.diagnostic = Boolean(data.diagnostic);
+      engine.logFetch = Boolean(data.fetch);
       for (const image of data.peripherals ??
         (data.peripheral ? [data.peripheral] : []))
-        await engine.peripherals.attach(image.buffer, image.base, image.name);
+        await engine.peripherals.attach(
+          image.buffer,
+          image.base,
+          image.name,
+          image.irqLine,
+        );
       self.postMessage({ type: "ready" });
       return;
     }
     if (!engine) throw Error("RTL engine is still loading");
     if (data.type === "attach") {
-      await engine.peripherals.attach(data.buffer, data.base, data.name);
+      await engine.peripherals.attach(
+        data.buffer,
+        data.base,
+        data.name,
+        data.irqLine,
+      );
       engine.record("device-attach", { base: data.base, name: data.name });
     }
     if (data.type === "detach") {
       engine.peripherals.detach(data.base);
       engine.record("device-detach", { base: data.base });
     }
+    if (data.type === "platform") engine.configure(data.platform);
     if (data.type === "diagnostic") {
       engine.diagnostic = data.enabled;
       engine.logFetch = data.fetch;

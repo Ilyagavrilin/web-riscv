@@ -7,17 +7,24 @@ export async function compareProfiles(
   onProgress = () => {},
   limits = { cycles: 30000, instructions: 4096 },
   peripheral = null,
+  platform = {},
 ) {
   const runs = [];
   for (const [id, profile] of Object.entries(profiles)) {
     onProgress(id);
     const engine = new Engine(await createModel(id), id);
+    engine.configure({ ...platform, stopOnInterrupt: false });
     for (const image of Array.isArray(peripheral)
       ? peripheral
       : peripheral
         ? [peripheral]
         : [])
-      await engine.peripherals.attach(image.buffer, image.base, image.name);
+      await engine.peripherals.attach(
+        image.buffer,
+        image.base,
+        image.name,
+        image.irqLine,
+      );
     engine.load(program);
     const trace = [];
     while (

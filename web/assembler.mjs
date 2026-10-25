@@ -90,9 +90,11 @@ function invoke(tool, args) {
   }
 }
 const linkerScript = `ENTRY(_scr1_entry)
-MEMORY { RAM (rwx) : ORIGIN = 0x200, LENGTH = 0xfe00 }
+MEMORY { RAM (rwx) : ORIGIN = 0, LENGTH = 0x10000 }
 PHDRS { image PT_LOAD FLAGS(7); }
 SECTIONS {
+ .vectors 0x1c0 : { KEEP(*(.vectors)) } > RAM :image
+ ASSERT(SIZEOF(.vectors) <= 0x40, "Interrupt vectors overlap reset entry")
  .text 0x200 : { *(.text .text.*) } > RAM :image
  .rodata : { *(.rodata .rodata.*) } > RAM :image
  .data : { *(.data .data.* .sdata .sdata.*) } > RAM :image
@@ -122,6 +124,7 @@ export async function assemble(
   );
   const status = invoke(assembler, [
     "--fatal-warnings",
+    `--defsym=SCR1_HAS_IPIC=${profile.registers === 16 ? 0 : 1}`,
     `-march=${isa}_zicsr_zifencei`,
     `-mabi=${abi}`,
     "-mno-relax",

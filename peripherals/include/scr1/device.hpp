@@ -2,8 +2,11 @@
 #include <cstddef>
 #include <cstdint>
 #include <systemc>
+#include <tlm>
 
 namespace scr1 {
+
+using BusTarget = tlm::tlm_base_initiator_socket<>::base_target_socket_type;
 
 class Device {
 public:
@@ -12,6 +15,8 @@ public:
     virtual std::uint32_t inspect(std::uint32_t) const noexcept { return 0; }
     virtual std::uint32_t read(std::uint32_t index) noexcept { return inspect(index); }
     virtual void write(std::uint32_t, std::uint32_t, std::uint32_t) noexcept {}
+    virtual bool irq() const noexcept { return false; }
+    virtual void bind_bus(BusTarget&) {}
     virtual void bind_clock(sc_core::sc_signal<bool>&) {}
 protected:
     ~Device() = default;

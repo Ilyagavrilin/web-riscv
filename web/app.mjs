@@ -26,12 +26,12 @@ for (const [id, device] of Object.entries(deviceTypes)) {
   const option = document.createElement("option");
   option.value = id;
   option.textContent = device.name;
+  option.title = device.description;
   $("peripheral-example").append(option);
 }
 function describeDevice() {
   const device = deviceTypes[$("peripheral-example").value];
   $("peripheral-base").value = device.base;
-  $("device-description").textContent = device.description;
 }
 $("peripheral-example").onchange = describeDevice;
 describeDevice();
@@ -53,9 +53,9 @@ try {
 } catch {
   $("editor").value = examples.fibonacci.source;
 }
-$("example-description").textContent = examples.fibonacci.description;
 function message(text, error = false) {
   $("message").textContent = text;
+  $("message").hidden = !text;
   $("message").classList.toggle("error", error);
 }
 function buttons() {
@@ -80,6 +80,7 @@ function buttons() {
   $("peripheral-detach").disabled = !ready || !peripheralImages.length || busy;
   $("compare").disabled = !ready || !loaded || dirty || busy;
   for (const id of [
+    "platform-apply",
     "diagnostic-mode",
     "diagnostic-fetch",
     "clear-log",
@@ -105,6 +106,7 @@ function load(program) {
   loaded = true;
   dirty = false;
   state = undefined;
+  message("");
   worker.postMessage({ type: "load", program });
   buttons();
   renderListing();
@@ -143,9 +145,7 @@ assemblerWorker.onmessage = ({ data }) => {
   try {
     localStorage.setItem("scr1-source", $("editor").value);
   } catch {}
-  message(
-    `GNU binutils loaded ${program.segments.reduce((n, s) => n + s.bytes.length, 0)} bytes at 0x200.`,
-  );
+  message("");
 };
 assemblerWorker.onerror = () => {
   busy = false;
@@ -216,6 +216,7 @@ function render(s) {
         paused: "Ready",
         breakpoint: "Breakpoint",
         watchpoint: "Data watchpoint",
+        interrupt: "Interrupt entry",
         halted: `Finished · exit ${s.exitCode}`,
         trap: `Trap · cause ${s.cause}`,
       }[s.status] || s.status;
@@ -315,6 +316,8 @@ function render(s) {
     row.append(track);
     $("wave").append(row);
   }
+  $("platform-state").textContent =
+    `Fetch ${s.platform.instructionLatency} / data ${s.platform.dataLatency} clocks · IRQ 0x${s.interrupts.mask.toString(16).padStart(4, "0")} · ${s.interrupts.count} entries · ${s.dmaTransfers} DMA transfers`;
   renderPeripheral(s.peripherals ?? (s.peripheral ? [s.peripheral] : []));
   renderDiagnostics();
   $("csrs").replaceChildren();
@@ -338,11 +341,6 @@ function handleWorkerMessage({ data }) {
     busy = false;
     if (currentElf) load(currentElf);
     else compile();
-    worker.postMessage({
-      type: "diagnostic",
-      enabled: $("diagnostic-mode").checked,
-      fetch: $("diagnostic-fetch").checked,
-    });
     buttons();
     return;
   }
@@ -360,6 +358,7 @@ function handleWorkerMessage({ data }) {
         buffer: pendingPeripheral.buffer,
         base: pendingPeripheral.base,
         name: pendingPeripheral.name,
+        irqLine: pendingPeripheral.irqLine,
       };
       peripheralImages = peripheralImages.filter((d) => d.base !== image.base);
       peripheralImages.push(image);
@@ -378,7 +377,9 @@ function handleWorkerMessage({ data }) {
     peripheralImages = peripheralImages.filter((d) => activeBases.has(d.base));
     busy = Boolean(pendingPeripheral);
     if (
-      ["halted", "trap", "breakpoint", "watchpoint"].includes(data.state.status)
+      ["halted", "trap", "breakpoint", "watchpoint", "interrupt"].includes(
+        data.state.status,
+      )
     )
       pause();
     render(data.state);
@@ -432,8 +433,6 @@ $("run").onclick = () => {
 $("example").onchange = () => {
   pause();
   $("editor").value = examples[$("example").value].source;
-  $("example-description").textContent =
-    examples[$("example").value].description;
   compile();
 };
 $("editor").oninput = () => {
@@ -469,7 +468,7 @@ async function openElf(file) {
     currentElf = program;
     load(program);
     $("assembly-editor").open = false;
-    message(`Loaded ${file.name}. Reset reloads this ELF image.`);
+    message("");
     await saveAsset({
       id: `elf:${file.name}`,
       type: "elf",
@@ -628,7 +627,11 @@ $("compare").onclick = () => {
     invalidateComparison();
     message("Comparison worker failed to load.", true);
   };
-  comparisonWorker.postMessage({ program, peripheral: peripheralImages });
+  comparisonWorker.postMessage({
+    program,
+    peripheral: peripheralImages,
+    platform: state.platform,
+  });
 };
 function renderPeripheral(devices) {
   $("peripheral-state").replaceChildren();
@@ -643,7 +646,7 @@ function renderPeripheral(devices) {
     const title = document.createElement("strong");
     title.textContent = device.name;
     const address = document.createElement("span");
-    address.textContent = `0x${hex(device.base)} · ${device.size} bytes`;
+    address.textContent = `0x${hex(device.base)} · ${device.size} bytes · IRQ ${device.irqLine < 0 ? "disconnected" : device.irqLine}${device.irq ? " HIGH" : ""}${device.busPending ? " · bus pending" : ""}`;
     const detach = document.createElement("button");
     detach.textContent = "Detach";
     detach.disabled = busy;
@@ -707,7 +710,13 @@ async function attachPeripheral(buffer, name, save = false) {
   pause();
   invalidateComparison();
   busy = true;
-  pendingPeripheral = { buffer, base, name, save };
+  pendingPeripheral = {
+    buffer,
+    base,
+    name,
+    save,
+    irqLine: Number($("peripheral-irq").value),
+  };
   worker.postMessage({ type: "attach", ...pendingPeripheral });
   buttons();
 }
@@ -744,7 +753,6 @@ $("peripheral-demo").onclick = () => {
   const demo = deviceTypes[$("peripheral-example").value].demo;
   $("example").value = demo;
   $("editor").value = examples[demo].source;
-  $("example-description").textContent = examples[demo].description;
   compile();
 };
 function startWorker() {
@@ -772,6 +780,15 @@ function startWorker() {
     type: "init",
     profile: $("profile").value,
     peripherals: peripheralImages,
+    diagnostic: $("diagnostic-mode").checked,
+    fetch: $("diagnostic-fetch").checked,
+    platform: {
+      instructionLatency: Number($("instruction-latency").value),
+      dataLatency: Number($("data-latency").value),
+      externalMask: Number($("external-mask").value),
+      softwareIrq: $("software-irq").checked,
+      stopOnInterrupt: $("stop-on-interrupt").checked,
+    },
   });
   buttons();
 }
@@ -869,7 +886,7 @@ function renderDiagnostics() {
         .includes(filter)
     )
       continue;
-    const details = ["memory", "mmio", "fetch"].includes(event.kind)
+    const details = ["memory", "mmio", "fetch", "dma"].includes(event.kind)
       ? `${event.operation ?? "fetch"}${event.width ? event.width * 8 : ""} ${event.data === null ? "—" : `0x${hex(event.data)}`} · ${event.response} · ${event.target ?? "instruction bus"}${event.pc !== undefined ? ` · PC 0x${hex(event.pc)}` : ""}`
       : event.kind === "retire"
         ? event.changes
@@ -1059,3 +1076,22 @@ showTab(location.hash.slice(1));
 refreshLibrary();
 $("profile").onchange = startWorker;
 startWorker();
+
+$("platform-form").onsubmit = (event) => {
+  event.preventDefault();
+  if (busy || !ready) return;
+  pause();
+  invalidateComparison();
+  busy = true;
+  worker.postMessage({
+    type: "platform",
+    platform: {
+      instructionLatency: Number($("instruction-latency").value),
+      dataLatency: Number($("data-latency").value),
+      externalMask: Number($("external-mask").value),
+      softwareIrq: $("software-irq").checked,
+      stopOnInterrupt: $("stop-on-interrupt").checked,
+    },
+  });
+  buttons();
+};

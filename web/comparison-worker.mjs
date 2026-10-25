@@ -10,6 +10,7 @@ self.onmessage = async ({ data }) => {
       (profile) => self.postMessage({ type: "progress", profile }),
       undefined,
       data.peripheral,
+      data.platform,
     );
     self.postMessage({ type: "results", results });
   } catch (error) {

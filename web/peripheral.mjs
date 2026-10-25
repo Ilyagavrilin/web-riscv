@@ -4,7 +4,9 @@ export class PeripheralBus {
   get device() {
     return this.devices.values().next().value;
   }
-  async attach(buffer, base, name) {
+  async attach(buffer, base, name, irqLine = 0) {
+    if (!Number.isInteger(irqLine) || irqLine < -1 || irqLine > 15)
+      throw Error("IRQ line must be -1 (disconnected) or 0…15");
     if (
       !Number.isInteger(base) ||
       base < 65536 ||
@@ -41,10 +43,24 @@ export class PeripheralBus {
       if (typeof exports[key] !== "function")
         throw Error(`Missing peripheral export: ${key}`);
     }
-    for (const key of ["mmio_tick", "mmio_inspect", "_initialize"]) {
+    for (const key of [
+      "mmio_tick",
+      "mmio_inspect",
+      "_initialize",
+      "mmio_irq",
+      "mmio_error",
+      "mmio_bus_request",
+      "mmio_bus_complete",
+    ]) {
       if (key in exports && typeof exports[key] !== "function")
         throw Error(`Invalid optional peripheral export: ${key}`);
     }
+    if (
+      Boolean(exports.mmio_bus_request) !== Boolean(exports.mmio_bus_complete)
+    )
+      throw Error(
+        "Bus request and completion exports must be provided together",
+      );
     instance.exports._initialize?.();
     if (exports.mmio_abi_version() !== 1)
       throw Error("Unsupported MMIO ABI version");
@@ -62,17 +78,64 @@ export class PeripheralBus {
     exports.mmio_reset();
     this.devices.set(base, {
       exports,
+      irqLine,
       base,
       size,
       name,
       messages: runtime.host.messages,
     });
   }
+  cursor = 0;
+  pending = null;
+  irqMask() {
+    let mask = 0;
+    for (const d of this.devices.values())
+      if (d.irqLine >= 0 && d.exports.mmio_irq?.()) mask |= 1 << d.irqLine;
+    return mask;
+  }
+  busRequest() {
+    if (
+      this.pending &&
+      this.devices.get(this.pending.device.base) === this.pending.device
+    )
+      return this.pending;
+    this.pending = null;
+    const devices = [...this.devices.values()];
+    for (let i = 0; i < devices.length; i++) {
+      const index = (this.cursor + i) % devices.length,
+        device = devices[index],
+        e = device.exports;
+      const valid = e.mmio_bus_request?.(0);
+      if (!valid) continue;
+      this.cursor = (index + 1) % devices.length;
+      const write = e.mmio_bus_request(1),
+        width = e.mmio_bus_request(4);
+      this.pending = {
+        device,
+        invalid:
+          valid !== 1 || ![0, 1].includes(write) || ![0, 1, 2].includes(width),
+        write,
+        address: e.mmio_bus_request(2) >>> 0,
+        data: e.mmio_bus_request(3) >>> 0,
+        width,
+        waitCycles: 0,
+      };
+      return this.pending;
+    }
+    return null;
+  }
+  completeBus(status, data) {
+    const request = this.pending;
+    this.pending = null;
+    request.device.exports.mmio_bus_complete(status, data);
+  }
   detach(base) {
     if (base === undefined) this.devices.clear();
     else this.devices.delete(base);
   }
   reset() {
+    this.pending = null;
+    this.cursor = 0;
     for (const d of this.devices.values()) d.exports.mmio_reset();
   }
   dispatch(bus) {
@@ -94,13 +157,14 @@ export class PeripheralBus {
     try {
       if (bus.write) {
         d.exports.mmio_write(offset, bus.data, width);
-        return { hit: 1, fault: 0, data: 0 };
+        return {
+          hit: 1,
+          fault: Number(Boolean(d.exports.mmio_error?.())),
+          data: 0,
+        };
       }
-      return {
-        hit: 1,
-        fault: 0,
-        data: d.exports.mmio_read(offset, width) >>> 0,
-      };
+      const data = d.exports.mmio_read(offset, width) >>> 0;
+      return { hit: 1, fault: Number(Boolean(d.exports.mmio_error?.())), data };
     } catch {
       this.lastFault = `Module trapped: ${d.name}`;
       this.detach(d.base);
@@ -119,6 +183,9 @@ export class PeripheralBus {
   }
   snapshots() {
     return [...this.devices.values()].map((d) => ({
+      irqLine: d.irqLine,
+      irq: Boolean(d.exports.mmio_irq?.()),
+      busPending: Boolean(d.exports.mmio_bus_request?.(0)),
       messages: d.messages,
       name: d.name,
       base: d.base,

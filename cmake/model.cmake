@@ -23,7 +23,7 @@ target_link_options(scr1 PRIVATE
   -sENVIRONMENT=web,worker,node
   -sALLOW_MEMORY_GROWTH=1
   -sFILESYSTEM=0
-  "-sEXPORTED_FUNCTIONS=[\"_reset\",\"_poke\",\"_peek\",\"_tick\",\"_signal\",\"_reg\",\"_mmio_response\"]"
+  "-sEXPORTED_FUNCTIONS=[\"_reset\",\"_poke\",\"_peek\",\"_tick\",\"_signal\",\"_reg\",\"_mmio_response\",\"_configure\",\"_interrupts\",\"_dma_request\",\"_prepare\"]"
 )
 verilate(scr1
   PREFIX Vworkbench

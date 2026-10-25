@@ -7,6 +7,17 @@ module workbench (
     input logic [7:0] host_data,
     input logic mmio_hit, mmio_fault,
     input logic [31:0] mmio_rdata,
+    input logic [7:0] instruction_wait, data_wait,
+    input logic [15:0] irq_lines,
+    input logic software_irq,
+    input logic dma_valid, dma_write,
+    input logic [31:0] dma_address, dma_data,
+    input logic [1:0] dma_width,
+    output logic instruction_accept, data_accept, dma_accept,
+    output logic [1:0] dma_response,
+    output logic [31:0] dma_read,
+    output logic interrupt_taken,
+    output logic [31:0] interrupt_pc,
     input logic [4:0] reg_addr,
     output logic [31:0] reg_data,
     output logic [31:0] pc, retired_pc,
@@ -30,6 +41,19 @@ module workbench (
     type_scr1_mem_cmd_e imem_cmd, dmem_cmd;
     type_scr1_mem_width_e width;
     logic core_reset;
+    logic [7:0] instruction_age, data_age, dma_age;
+
+    assign instruction_accept = core_reset && imem_req && instruction_age >= instruction_wait;
+    assign data_accept = core_reset && dmem_req && data_age >= data_wait;
+    assign dma_accept = core_reset && dma_valid && !data_accept && dma_age >= data_wait;
+    always_ff @(posedge clk) begin
+        if (!rst_n || !core_reset || !imem_req || instruction_accept) instruction_age <= 0;
+        else if (instruction_age < instruction_wait) instruction_age <= instruction_age + 1;
+        if (!rst_n || !core_reset || !dmem_req || data_accept) data_age <= 0;
+        else if (data_age < data_wait) data_age <= data_age + 1;
+        if (!rst_n || !core_reset || !dma_valid || dma_accept) dma_age <= 0;
+        else if (dma_age < data_wait) dma_age <= dma_age + 1;
+    end
 
     assign ready = core_reset;
     assign instruction_data = imem_rdata;
@@ -51,6 +75,22 @@ module workbench (
 `endif
     always_ff @(posedge clk) begin
         if (host_we) memory[host_addr] <= host_data;
+        interrupt_taken <= rst_n && core_reset && core.i_pipe_top.exu2csr_take_irq;
+        interrupt_pc <= pc;
+        dma_response <= SCR1_MEM_RESP_NOTRDY;
+        if (rst_n && dma_accept) begin
+            if (dma_width <= 2 && dma_address < 65536 && dma_address + (1 << dma_width) <= 65536 && (dma_address & ((1 << dma_width) - 1)) == 0) begin
+                dma_response <= SCR1_MEM_RESP_RDY_OK;
+                if (dma_write) begin
+                    for (int i = 0; i < 4; i++)
+                        if (i < (1 << dma_width)) memory[dma_address + i] <= dma_data[i*8 +: 8];
+                end else begin
+                    dma_read <= 0;
+                    for (int i = 0; i < 4; i++)
+                        if (i < (1 << dma_width)) dma_read[i*8 +: 8] <= memory[dma_address + i];
+                end
+            end else dma_response <= SCR1_MEM_RESP_RDY_ER;
+        end
         retired <= rst_n && core_reset && (core.i_pipe_top.instret && !core.i_pipe_top.exu2csr_take_exc);
         retired_pc <= pc;
         trap <= rst_n && core_reset && core.i_pipe_top.exu2csr_take_exc;
@@ -60,12 +100,12 @@ module workbench (
         exit_valid <= 0;
         imem_resp <= SCR1_MEM_RESP_NOTRDY;
         dmem_resp <= SCR1_MEM_RESP_NOTRDY;
-        if (rst_n && core_reset && imem_req) begin
+        if (rst_n && instruction_accept) begin
             imem_resp <= imem_addr <= 65532 ? SCR1_MEM_RESP_RDY_OK : SCR1_MEM_RESP_RDY_ER;
             imem_rdata <= {memory[(imem_addr[15:0] & 16'hfffc) | 3], memory[(imem_addr[15:0] & 16'hfffc) | 2],
                            memory[(imem_addr[15:0] & 16'hfffc) | 1], memory[imem_addr[15:0] & 16'hfffc]};
         end
-        if (rst_n && core_reset && dmem_req) begin
+        if (rst_n && data_accept) begin
             dmem_resp <= SCR1_MEM_RESP_RDY_OK;
             if (dmem_addr == 32'hf0000000 && dmem_write) begin
                 uart_valid <= 1;
@@ -93,21 +133,21 @@ module workbench (
         .clk(clk), .pwrup_rst_n(rst_n), .rst_n(rst_n), .cpu_rst_n(rst_n),
         .test_mode(1'b0), .test_rst_n(1'b1), .core_rst_n_o(core_reset),
         .core_rdc_qlfy_o(), .core_fuse_mhartid_i(32'b0),
-        .core_irq_soft_i(1'b0), .core_irq_mtimer_i(1'b0), .core_mtimer_val_i(64'b0),
+        .core_irq_soft_i(software_irq), .core_irq_mtimer_i(1'b0), .core_mtimer_val_i(64'b0),
 `ifdef SCR1_DBG_EN
         .sys_rst_n_o(), .sys_rdc_qlfy_o(), .tapc_fuse_idcode_i(32'hDEB11001),
         .tapc_trst_n(rst_n), .tapc_tck(1'b0), .tapc_tms(1'b0), .tapc_tdi(1'b0),
         .tapc_tdo(), .tapc_tdo_en(),
 `endif
 `ifdef SCR1_IPIC_EN
-        .core_irq_lines_i(16'b0),
+        .core_irq_lines_i(irq_lines),
 `else
-        .core_irq_ext_i(1'b0),
+        .core_irq_ext_i(|irq_lines),
 `endif
-        .imem2core_req_ack_i(imem_req && core_reset), .core2imem_req_o(imem_req),
+        .imem2core_req_ack_i(instruction_accept), .core2imem_req_o(imem_req),
         .core2imem_cmd_o(imem_cmd), .core2imem_addr_o(imem_addr),
         .imem2core_rdata_i(imem_rdata), .imem2core_resp_i(imem_resp),
-        .dmem2core_req_ack_i(dmem_req && core_reset), .core2dmem_req_o(dmem_req),
+        .dmem2core_req_ack_i(data_accept), .core2dmem_req_o(dmem_req),
         .core2dmem_cmd_o(dmem_cmd), .core2dmem_width_o(width),
         .core2dmem_addr_o(dmem_addr), .core2dmem_wdata_o(dmem_data),
         .dmem2core_rdata_i(dmem_rdata), .dmem2core_resp_i(dmem_resp)

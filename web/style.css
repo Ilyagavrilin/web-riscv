@@ -489,6 +489,13 @@ pre {
   color: var(--muted);
   font-size: 14px;
 }
+.peripheral-controls > .toggle {
+  display: flex;
+  align-items: center;
+  align-self: center;
+  padding-top: 24px;
+}
+
 .file-row {
   display: flex;
   gap: 18px;

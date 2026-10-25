@@ -41,6 +41,26 @@ void mmio_response(unsigned hit, unsigned fault, unsigned data) {
     core->mmio_fault = fault;
     core->mmio_rdata = data;
 }
+void configure(unsigned instruction_latency, unsigned data_latency) {
+    core->instruction_wait = instruction_latency - 1;
+    core->data_wait = data_latency - 1;
+}
+void interrupts(unsigned lines, unsigned software) {
+    core->irq_lines = lines;
+    core->software_irq = software;
+}
+void dma_request(unsigned valid, unsigned write, unsigned address, unsigned data, unsigned width) {
+    core->dma_valid = valid;
+    core->dma_write = write;
+    core->dma_address = address;
+    core->dma_data = data;
+    core->dma_width = width;
+}
+void prepare() {
+    core->rst_n = 1;
+    core->clk = 0;
+    core->eval();
+}
 void tick() { core->rst_n = 1; cycle(); }
 unsigned reg(unsigned index) {
     core->reg_addr = index;
@@ -75,6 +95,13 @@ unsigned signal(unsigned index) {
     case 23: return core->mepc;
     case 24: return core->mtval;
     case 25: return core->mcause;
+    case 26: return core->instruction_accept;
+    case 27: return core->data_accept;
+    case 28: return core->dma_accept;
+    case 29: return core->dma_response;
+    case 30: return core->dma_read;
+    case 31: return core->interrupt_taken;
+    case 32: return core->interrupt_pc;
     default: return 0;
     }
 }

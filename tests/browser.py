@@ -138,9 +138,16 @@ try:
             "document.querySelector('#log-summary').textContent.startsWith('Diagnostic capture enabled')"
         )
         tab("devices")
+        page.locator("#instruction-latency").fill("3")
+        page.locator("#data-latency").fill("7")
+        page.locator("#platform-apply").click()
+        page.wait_for_function(
+            "document.querySelector('#platform-state').textContent.startsWith('Fetch 3 / data 7 clocks')"
+        )
         for module_name, expected in [
             ("timer", "40 00 00 00"),
             ("mailbox", "11 00 00 00 22 00 00 00 33 00 00 00"),
+            ("dma", "11 00 00 00 22 00 00 00 33 00 00 00 44 00 00 00"),
         ]:
             page.locator("#peripheral-example").select_option(module_name)
             page.locator("#peripheral-attach").click()
@@ -153,6 +160,43 @@ try:
             finished()
             tab("debugger")
             assert expected in page.locator("#memory").inner_text()
+            if module_name == "dma":
+                page.locator("#memory-address").fill("0x1100")
+                page.locator("#memory-address").dispatch_event("change")
+                page.wait_for_function(
+                    "document.querySelector('#memory').textContent.includes('11 00 00 00 22 00 00 00 33 00 00 00 44 00 00 00')"
+                )
+                tab("diagnostics")
+                page.locator("#log-kind").select_option("dma")
+                assert page.locator("#diagnostic-log tr").count() == 8
+                tab("debugger")
+                page.locator("#memory-address").fill("0x1000")
+                page.locator("#memory-address").dispatch_event("change")
+            if module_name == "timer":
+                tab("devices")
+                page.locator("#stop-on-interrupt").check()
+                page.locator("#platform-apply").click()
+                page.wait_for_function(
+                    "!document.querySelector('#platform-apply').disabled"
+                )
+                tab("debugger")
+                page.locator("#assembly-editor summary").click()
+                page.locator("#example").select_option("interrupt")
+                ready()
+                page.locator("#run").click()
+                page.wait_for_function(
+                    "document.querySelector('#status').textContent === 'Interrupt entry'"
+                )
+                tab("devices")
+                page.locator("#stop-on-interrupt").uncheck()
+                page.locator("#platform-apply").click()
+                page.wait_for_function(
+                    "!document.querySelector('#platform-apply').disabled"
+                )
+                page.locator("#run").click()
+                finished()
+                tab("debugger")
+                assert "01 00 00 00" in page.locator("#memory").inner_text()
             tab("devices")
             page.locator("#peripheral-detach").click()
             page.wait_for_function(
@@ -208,7 +252,7 @@ try:
         capture_path = artifacts / "browser-trace.json"
         download.value.save_as(str(capture_path))
         capture = json.loads(capture_path.read_text())
-        assert capture["schemaVersion"] == 2
+        assert capture["schemaVersion"] == 3
         assert len(capture["peripherals"]) == 2
         assert any(
             e["kind"] == "mmio" and e.get("operation") == "read"
@@ -223,6 +267,15 @@ try:
         page.wait_for_function(
             "document.querySelector('#peripheral-status').textContent === 'No module attached.'"
         )
+        page.locator("#instruction-latency").fill("1")
+        page.locator("#data-latency").fill("1")
+        page.locator("#platform-apply").click()
+        page.wait_for_function(
+            "document.querySelector('#platform-state').textContent.startsWith('Fetch 1 / data 1 clocks')"
+        )
+        tab("debugger")
+        if page.locator("#assembly-editor").get_attribute("open") is not None:
+            page.locator("#assembly-editor summary").click()
         tab("guide")
         page.locator("#mmio-guide details summary").click()
         page.wait_for_function(
@@ -270,5 +323,5 @@ try:
 finally:
     server.shutdown()
 print(
-    "Browser checks passed: large tabbed UI, three profiles, ELF upload/disassembly/library/reset, custom MMIO upload/library/multiple windows, overlap rejection, diagnostics, watchpoints, export, documentation, UART, pause, mobile layout."
+    "Browser checks passed: large tabbed UI, three profiles, ELF upload/disassembly/library/reset, custom MMIO upload/library/multiple windows, memory latency, timer IRQ/mret, DMA copy/trace, overlap rejection, diagnostics, watchpoints, export, documentation, UART, pause, mobile layout."
 )

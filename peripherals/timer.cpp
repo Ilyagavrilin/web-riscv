@@ -15,12 +15,13 @@ public:
     }
     void write(std::uint32_t index, std::uint32_t value, std::uint32_t mask) noexcept override {
         switch (index) {
-        case Control: store(index, value, mask & 3u); break;
+        case Control: store(index, value, mask & 7u); break;
         case Period: store(index, value, mask); if (!registers_[Period]) registers_[Period] = 1; break;
         case Elapsed: store(index, value, mask); break;
         case Status: registers_[Status] &= ~(value & mask & 1u); break;
         }
     }
+    bool irq() const noexcept override { return (registers_[Status] & 1) && (registers_[Control] & 4); }
     void on_clock() {
         if (!(registers_[Control] & 1)) return;
         if (++registers_[Elapsed] >= registers_[Period]) {
