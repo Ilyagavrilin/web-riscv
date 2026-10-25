@@ -2,6 +2,12 @@ name: Pages
 
 on:
   workflow_dispatch:
+    inputs:
+      deploy:
+        description: Publish the built site to GitHub Pages
+        type: boolean
+        required: false
+        default: false
 
 permissions:
   contents: read
@@ -16,11 +22,13 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
       - uses: cachix/install-nix-action@d9186cbdca7adedf113a159fa91f725a27866771
+      - run: nix flake check --print-build-logs
       - run: nix build --print-build-logs
       - uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa
         with:
           path: result/
   deploy:
+    if: ${{ inputs.deploy }}
     needs: build
     runs-on: ubuntu-latest
     permissions:
