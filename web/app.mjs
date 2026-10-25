@@ -1,6 +1,7 @@
+import deviceTypes from "./devices.json" with { type: "json" };
 import { assets } from "./library.mjs";
 import profiles from "./profiles.json" with { type: "json" };
-import { assemble, loadElf, aliases } from "./assembler.mjs";
+import { loadElf, aliases } from "./assembler.mjs";
 import { examples } from "./examples.mjs";
 const $ = (id) => document.getElementById(id),
   hex = (n) => (n >>> 0).toString(16).padStart(8, "0");
@@ -20,6 +21,20 @@ let ready = false,
   activeProgram,
   peripheralImages = [],
   pendingPeripheral;
+$("peripheral-example").replaceChildren();
+for (const [id, device] of Object.entries(deviceTypes)) {
+  const option = document.createElement("option");
+  option.value = id;
+  option.textContent = device.name;
+  $("peripheral-example").append(option);
+}
+function describeDevice() {
+  const device = deviceTypes[$("peripheral-example").value];
+  $("peripheral-base").value = device.base;
+  $("device-description").textContent = device.description;
+}
+$("peripheral-example").onchange = describeDevice;
+describeDevice();
 for (const [id, profile] of Object.entries(profiles)) {
   const option = document.createElement("option");
   option.value = id;
@@ -94,25 +109,52 @@ function load(program) {
   buttons();
   renderListing();
 }
+let compilationToken = 0;
+const assemblerWorker = new Worker(
+  new URL("./assembler-worker.mjs", import.meta.url),
+  { type: "module" },
+);
 function compile() {
-  try {
-    const program = assemble($("editor").value, profiles[$("profile").value]);
-    currentElf = undefined;
-    program.name = `Assembly · ${examples[$("example").value]?.name ?? "custom"}`;
-    load(program);
-    try {
-      localStorage.setItem("scr1-source", $("editor").value);
-    } catch {}
-    message(
-      `Loaded ${program.segments[0].bytes.length} bytes at 0x200. Ready to explore.`,
-    );
-  } catch (error) {
-    dirty = true;
-    $("status").textContent = "Assembly error";
-    message(error.message, true);
-    buttons();
-  }
+  pause();
+  busy = true;
+  buttons();
+  $("status").textContent = "Assembling…";
+  message("GNU assembler and linker are building the program…");
+  assemblerWorker.postMessage({
+    token: ++compilationToken,
+    source: $("editor").value,
+    profile: profiles[$("profile").value],
+  });
 }
+assemblerWorker.onmessage = ({ data }) => {
+  if (data.token !== compilationToken) return;
+  busy = false;
+  if (data.error) {
+    dirty = !currentElf;
+    $("status").textContent = "Assembly error";
+    message(data.error, true);
+    buttons();
+    return;
+  }
+  currentElf = undefined;
+  const program = data.program;
+  program.name = `GNU assembly · ${examples[$("example").value]?.name ?? "custom"}`;
+  load(program);
+  try {
+    localStorage.setItem("scr1-source", $("editor").value);
+  } catch {}
+  message(
+    `GNU binutils loaded ${program.segments.reduce((n, s) => n + s.bytes.length, 0)} bytes at 0x200.`,
+  );
+};
+assemblerWorker.onerror = () => {
+  busy = false;
+  message(
+    "Assembler worker failed to load. Serve the complete Nix build.",
+    true,
+  );
+  buttons();
+};
 function renderListing() {
   $("breakpoints").replaceChildren();
   for (const address of [...breakpoints].sort((a, b) => a - b)) {
@@ -422,6 +464,7 @@ async function openElf(file) {
     if (file.size > 4 * 1024 * 1024) throw Error("ELF exceeds 4 MiB");
     const buffer = await file.arrayBuffer();
     const program = loadElf(buffer);
+    compilationToken++;
     program.name = file.name;
     currentElf = program;
     load(program);
@@ -507,8 +550,7 @@ $("compare").onclick = () => {
   pause();
   let program;
   try {
-    program =
-      currentElf || assemble($("editor").value, profiles[$("profile").value]);
+    program = activeProgram;
   } catch (error) {
     message(error.message, true);
     return;
@@ -672,12 +714,15 @@ async function attachPeripheral(buffer, name, save = false) {
 $("peripheral-attach").onclick = async () => {
   try {
     const response = await fetch(
-      new URL("./peripherals/pulse-counter.wasm", import.meta.url),
+      new URL(
+        `./peripherals/${$("peripheral-example").value}.wasm`,
+        import.meta.url,
+      ),
     );
     if (!response.ok) throw Error("Could not load the example peripheral");
     await attachPeripheral(
       await response.arrayBuffer(),
-      "GPIO + cycle counter",
+      deviceTypes[$("peripheral-example").value].name,
     );
   } catch (error) {
     message(error.message, true);
@@ -696,12 +741,14 @@ $("peripheral-file").onchange = async (event) => {
 };
 $("peripheral-detach").onclick = () => detachPeripheral();
 $("peripheral-demo").onclick = () => {
-  $("example").value = "peripheral";
-  $("editor").value = examples.peripheral.source;
-  $("example-description").textContent = examples.peripheral.description;
+  const demo = deviceTypes[$("peripheral-example").value].demo;
+  $("example").value = demo;
+  $("editor").value = examples[demo].source;
+  $("example-description").textContent = examples[demo].description;
   compile();
 };
 function startWorker() {
+  compilationToken++;
   pause();
   invalidateComparison();
   worker?.terminate();
@@ -939,7 +986,7 @@ $("device-guide").onclick = () => {
 $("module-source").parentElement.ontoggle = async (event) => {
   if (!event.target.open || $("module-source").dataset.loaded) return;
   try {
-    const response = await fetch("./peripherals/pulse-counter.c");
+    const response = await fetch("./peripherals/pulse-counter.cpp");
     if (!response.ok) throw Error("Source unavailable");
     $("module-source").textContent = await response.text();
     $("module-source").dataset.loaded = "true";

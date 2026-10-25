@@ -8,25 +8,25 @@ import { examples } from "../web/examples.mjs";
 
 for (const [id, profile] of Object.entries(profiles)) {
   const engine = new Engine(await createModel(id), id);
-  function run(source) {
-    engine.load(assemble(source));
+  async function run(source) {
+    engine.load(await assemble(source));
     engine.advance("run", 10000);
     return engine.snapshot();
   }
-  test(`${profile.isa}: shared workload and UART run on real RTL`, () => {
-    let s = run(examples.fibonacci.source);
+  test(`${profile.isa}: shared workload and UART run on real RTL`, async () => {
+    let s = await run(examples.fibonacci.source);
     assert.equal(s.status, "halted");
     assert.equal(engine.m._peek(0x102c), 89);
-    s = run(examples.hello.source);
+    s = await run(examples.hello.source);
     assert.equal(s.status, "halted");
     assert.equal(s.console, "SCR1\n");
   });
-  test(`${profile.isa}: compressed instructions and M availability`, () => {
-    let s = run(".word 0x9002451d");
+  test(`${profile.isa}: compressed instructions and M availability`, async () => {
+    let s = await run(".word 0x9002451d");
     assert.equal(s.registers[10], 7);
     assert.equal(s.status, "trap");
     assert.equal(s.cause, 3);
-    s = run(
+    s = await run(
       "li a0, 7\nli a1, 9\nmul a2, a0, a1\nli t0, 0xf0000004\nsw zero, 0(t0)",
     );
     if (profile.multiply) {
@@ -38,8 +38,8 @@ for (const [id, profile] of Object.entries(profiles)) {
     }
   });
   if (profile.registers === 16)
-    test("RV32EC rejects instructions addressing x16", () => {
-      const s = run("addi x16, zero, 1");
+    test("RV32EC rejects instructions addressing x16", async () => {
+      const s = await run("addi x16, zero, 1");
       assert.equal(s.status, "trap");
       assert.equal(s.cause, 2);
     });

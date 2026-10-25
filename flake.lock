@@ -1,5 +1,22 @@
 {
   "nodes": {
+    "binutils-wasm": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1784874921,
+        "narHash": "sha256-t/WMqzxGjT7nTMCqdb+gYtz2iTro5dToWclqCAhSbMU=",
+        "owner": "racerxdl",
+        "repo": "riscv-online-asm",
+        "rev": "0bc309eb8da8c2573e8f122067c52b815f13090c",
+        "type": "github"
+      },
+      "original": {
+        "owner": "racerxdl",
+        "repo": "riscv-online-asm",
+        "rev": "0bc309eb8da8c2573e8f122067c52b815f13090c",
+        "type": "github"
+      }
+    },
     "nixpkgs": {
       "locked": {
         "lastModified": 1792773339,
@@ -18,8 +35,10 @@
     },
     "root": {
       "inputs": {
+        "binutils-wasm": "binutils-wasm",
         "nixpkgs": "nixpkgs",
-        "scr1": "scr1"
+        "scr1": "scr1",
+        "systemc-source": "systemc-source"
       }
     },
     "scr1": {
@@ -36,6 +55,23 @@
         "owner": "syntacore",
         "repo": "scr1",
         "rev": "ebb5e3551a9d93c0ee95f0b767dd878b8927e702",
+        "type": "github"
+      }
+    },
+    "systemc-source": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1761929499,
+        "narHash": "sha256-v/PcQu0m/7zyx2TtpZrLFbHtknahgVCkzcRi3lgrRGw=",
+        "owner": "accellera-official",
+        "repo": "systemc",
+        "rev": "70b0fc8e4a74acc677b0fc73cea08f940c2115d5",
+        "type": "github"
+      },
+      "original": {
+        "owner": "accellera-official",
+        "repo": "systemc",
+        "rev": "70b0fc8e4a74acc677b0fc73cea08f940c2115d5",
         "type": "github"
       }
     }

@@ -1,3 +1,4 @@
+import { peripheralHost } from "./wasi.mjs";
 export class PeripheralBus {
   devices = new Map();
   get device() {
@@ -14,10 +15,22 @@ export class PeripheralBus {
     if (buffer.byteLength > 4 * 1024 * 1024)
       throw Error("Peripheral exceeds 4 MiB");
     const module = await WebAssembly.compile(buffer);
-    if (WebAssembly.Module.imports(module).length)
-      throw Error("Peripheral must be standalone: imports are not supported");
-    const instance = await WebAssembly.instantiate(module, {}),
+    const runtime = peripheralHost();
+    for (const entry of WebAssembly.Module.imports(module))
+      if (!runtime.supports(entry))
+        throw Error(
+          `Unsupported peripheral import: ${entry.module}.${entry.name}`,
+        );
+    const instance = await WebAssembly.instantiate(module, runtime.imports),
       exports = instance.exports;
+    runtime.host.instance = instance;
+    if (
+      typeof SharedArrayBuffer !== "undefined" &&
+      exports.memory?.buffer instanceof SharedArrayBuffer
+    )
+      throw Error(
+        "Peripheral shared memory is not supported on this static site",
+      );
     for (const key of [
       "mmio_abi_version",
       "mmio_size",
@@ -47,7 +60,13 @@ export class PeripheralBus {
         throw Error(`MMIO window overlaps ${d.name}`);
     }
     exports.mmio_reset();
-    this.devices.set(base, { exports, base, size, name });
+    this.devices.set(base, {
+      exports,
+      base,
+      size,
+      name,
+      messages: runtime.host.messages,
+    });
   }
   detach(base) {
     if (base === undefined) this.devices.clear();
@@ -100,6 +119,7 @@ export class PeripheralBus {
   }
   snapshots() {
     return [...this.devices.values()].map((d) => ({
+      messages: d.messages,
       name: d.name,
       base: d.base,
       size: d.size,

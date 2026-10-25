@@ -9,7 +9,7 @@ nix build
 nix develop --command python3 -m http.server 8080 --directory result --bind 127.0.0.1
 ```
 
-Open http://localhost:8080. HTTP is required for ES modules and WebAssembly. All asset paths are relative, including workers and model imports, so project Pages work without a base-path setting. No npm installation, external fonts, server API, shared-memory Wasm, or COOP/COEP headers are required.
+Open http://localhost:8080. HTTP is required for ES modules and WebAssembly. All asset paths are relative, including workers and model imports, so project Pages work without a base-path setting. No npm installation, external fonts, server API, shared-memory Wasm, or COOP/COEP headers are required. GNU binutils binaries are hash-pinned through the flake input and reused rather than rebuilt; WebAssembly compilation is cached within the assembler worker.
 
 `flake.lock` pins both nixpkgs and unmodified SCR1. Each model is an independent Nix derivation, using CMake, Ninja, Verilator's `verilate()` integration, and the Emscripten toolchain. The site uses CMake/CTest for assembly, validation, and installation. Nix declares dependencies and options without custom shell phases.
 
@@ -51,7 +51,7 @@ Diagnostic mode retains 10,000 events, with the latest 200 shown in the UI; JSON
 
 Comparison runs stop after 30,000 clocks or 4,096 retirements per profile. Final-state matches require both programs to finish; bounded or trapping runs are marked incomplete. Register comparison uses the registers shared by each pair of profiles. Device instances are reset independently for each run.
 
-The Guide tab lists supported assembly instructions. Full assembler directives, C compilation, CSR mnemonics, and compressed mnemonics require an external toolchain and ELF loading. The core executes those encodings itself. Ctrl/⌘+Enter assembles, Alt+→ steps, and Escape pauses. Reset reloads the active ELF; editing assembly does not replace it until a successful assembly/load.
+The Guide tab lists supported assembly instructions. Assembly uses a pinned prebuilt GNU as/ld 2.46.0 toolchain in a separate worker, with standard directives, macros, expressions, relocations, CSR mnemonics and ISA checks. C compilation still uses an external compiler. The editor defaults to `.option norvc`; use `.option rvc` to emit compressed instructions. Ctrl/⌘+Enter assembles, Alt+→ steps, and Escape pauses. Reset reloads the active ELF; editing assembly does not replace it until a successful assembly/load.
 
 ## Hot-loaded MMIO peripherals
 
@@ -64,7 +64,50 @@ Select **GPIO + cycle counter**, leave its base at `0x40000000`, and click **Att
 | `0x08` | Counter  | Active clocks, read/write, wraps at 32 bits          |
 | `0x0c` | Control  | Bit 0 enables counting and rotation                  |
 
-The example is written in C in `peripherals/pulse-counter.c`. It has no imports, allocator, browser access, or runtime dependencies. Build it separately with `nix build .#pulse-counter`; the normal site build includes it automatically. The **Load your own module** file picker attaches a custom module. Attaching or replacing a module resets that device while preserving CPU registers, RAM, and the clock count. Detaching restores bus errors for its address range. Program reset also resets the attached device; profile switching creates a fresh CPU and reattaches the same module. Comparison creates an independent copy for each profile.
+The GPIO, timer and mailbox examples are actual SystemC `SC_METHOD` modules, linked against the official Accellera 3.0.2 kernel. Their sources are in `peripherals/*.cpp`. Build it separately with `nix build .#pulse-counter`; the normal site build includes it automatically. The **Load your own module** file picker attaches a custom module. Attaching or replacing a module resets that device while preserving CPU registers, RAM, and the clock count. Detaching restores bus errors for its address range. Program reset also resets the attached device; profile switching creates a fresh CPU and reattaches the same module. Comparison creates an independent copy for each profile.
+
+### SystemC authoring API
+
+Derive from `scr1::ClockedDevice<N>` and register an `SC_METHOD` sensitive to `clk.pos()`. `N` is the number of 32-bit registers. The SDK provides masked register writes and side-effect-free inspection; the adapter owns clock binding, the SystemC kernel and the browser ABI.
+
+```cpp
+#include <scr1/device.hpp>
+class Counter final : public scr1::ClockedDevice<1> {
+public:
+    explicit Counter(sc_core::sc_module_name name) : ClockedDevice(name) {
+        SC_METHOD(count);
+        sensitive << clk.pos();
+        dont_initialize();
+    }
+    void count() { ++registers_[0]; }
+};
+scr1::Device& scr1::device() noexcept {
+    static Counter counter{"counter"};
+    return counter;
+}
+```
+
+`read(index)` may have side effects; `inspect(index) const` must not. `write(index, value, mask)` receives lane-aligned word data and a bitmask; call `store()` for a normal masked write. Examples demonstrate sticky status, write-one-to-clear flags, read-to-pop FIFOs and staged transfers.
+
+```sh
+nix develop
+emcmake cmake -S . -B build/my-device -G Ninja \
+  -DSCR1_PERIPHERAL=ON \
+  -DSystemCLanguage_DIR="$SCR1_SYSTEMC/lib/cmake/SystemCLanguage" \
+  -DSCR1_MMIO_SOURCE="$PWD/my-device.cpp"
+cmake --build build/my-device
+```
+
+Load `build/my-device/custom-device.wasm` in Devices. Authors write only SystemC/C++; Wasm is the browser target. One CPU tick advances a 500 ps low phase and a 500 ps high phase through `sc_start`, including delta-cycle settlement. Bus operations happen first, so a write enabling a timer counts on that edge. Reset restores device state; kernel time remains monotonic within that instance. Every attached instance owns an isolated kernel. This method-process build supports `SC_METHOD`; coroutine `SC_THREAD`/`SC_CTHREAD` models are not supported. It does not require shared browser memory.
+
+Additional examples:
+
+| Module    | Default base | Behavior                                                                                       |
+| --------- | ------------ | ---------------------------------------------------------------------------------------------- |
+| `timer`   | `0x40000100` | One-shot or periodic match after a programmed number of clock edges; sticky W1C flag           |
+| `mailbox` | `0x40000200` | Stage TX, transfer on a clock edge into an eight-word RX FIFO, read-to-pop RX, sticky overflow |
+
+Both have selectable demo programs that store results at `0x1000`. The timer demo stores elapsed `64` and match `1`; the mailbox demo stores `17`, `34`, `51`. Full register maps, compile steps, source downloads and the SDK reference are in the site's Guide tab.
 
 The version 1 ABI uses these Wasm exports, with unsigned 32-bit parameters and results:
 
@@ -78,7 +121,7 @@ void mmio_tick(uint32_t clocks);                     // Optional
 uint32_t mmio_inspect(uint32_t aligned_offset);      // Optional, side-effect free
 ```
 
-Modules must be standalone Wasm with no imports. The loader calls `_initialize` when exported, validates the ABI and window, and resets the new instance before replacing the previous one. Failed validation leaves the previous device attached. Windows must be word-aligned, 4–65,536 bytes long, and outside RAM and the built-in UART/exit registers. Multiple non-overlapping windows can be attached. Reusing a base replaces that instance; an overlap at a different base is rejected.
+SystemC modules use a narrow host for standard I/O and an empty environment; filesystem, network, wall-clock and thread imports are not provided. The loader calls `_initialize` when exported, validates the ABI and window, and resets the new instance before replacing the previous one. Failed validation leaves the previous device attached. Windows must be word-aligned, 4–65,536 bytes long, and outside RAM and the built-in UART/exit registers. Multiple non-overlapping windows can be attached. Reusing a base replaces that instance; an overlap at a different base is rejected.
 
 `width` is 1, 2, or 4 bytes. Accesses are little-endian and naturally aligned; the bus rejects accesses crossing the window. Read/write functions run once for each accepted data-bus request, before its rising edge. `mmio_tick(1)` runs after each simulated rising edge, including the edge enabling the device. Inspection does not issue bus transactions. Modules execute in a worker; external interrupt signaling, asynchronous host I/O, and Wasm component/WASI interfaces are outside this ABI.
 
@@ -119,4 +162,4 @@ The Pages workflow runs only through manual `workflow_dispatch`. Select GitHub A
 
 ## License
 
-Workbench code is MIT. SCR1 remains under its upstream Solderpad Hardware Licence 2.0; the built site includes the unmodified `SCR1-LICENSE`. Toolchain runtimes retain their own licenses. Source: [syntacore/scr1](https://github.com/syntacore/scr1).
+Workbench code is MIT. SCR1 remains under its upstream Solderpad Hardware Licence 2.0; the built site includes the unmodified `SCR1-LICENSE`. SystemC is Apache-2.0; its license and notice are included under `peripherals/`. GNU binutils is GPLv3+; the site includes its license and corresponding source locations under `toolchain/`. Toolchain runtimes retain their own licenses. Source: [syntacore/scr1](https://github.com/syntacore/scr1).

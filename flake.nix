@@ -3,6 +3,14 @@
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    systemc-source = {
+      url = "github:accellera-official/systemc/70b0fc8e4a74acc677b0fc73cea08f940c2115d5";
+      flake = false;
+    };
+    binutils-wasm = {
+      url = "github:racerxdl/riscv-online-asm/0bc309eb8da8c2573e8f122067c52b815f13090c";
+      flake = false;
+    };
     scr1 = {
       url = "github:syntacore/scr1/ebb5e3551a9d93c0ee95f0b767dd878b8927e702";
       flake = false;
@@ -13,6 +21,8 @@
     {
       nixpkgs,
       scr1,
+      systemc-source,
+      binutils-wasm,
       ...
     }:
     let
@@ -27,7 +37,15 @@
         system:
         let
           pkgs = nixpkgs.legacyPackages.${system};
-          peripheral = pkgs.callPackage ./nix/peripheral.nix { src = ./.; };
+          systemcWasm = pkgs.callPackage ./nix/systemc.nix { src = systemc-source; };
+          peripheral = pkgs.callPackage ./nix/peripheral.nix {
+            src = ./.;
+            inherit systemcWasm;
+          };
+          toolchain = pkgs.callPackage ./nix/toolchain.nix {
+            src = ./.;
+            inherit binutils-wasm;
+          };
           models = nixpkgs.lib.mapAttrs (
             profile: _:
             pkgs.callPackage ./nix/model.nix {
@@ -38,8 +56,16 @@
         in
         {
           pulse-counter = peripheral;
+          peripherals = peripheral;
+          systemc = systemcWasm;
+          assembler = toolchain;
           default = pkgs.callPackage ./nix/site.nix {
-            inherit scr1 models peripheral;
+            inherit
+              scr1
+              models
+              peripheral
+              toolchain
+              ;
             src = ./.;
           };
         }
@@ -55,6 +81,7 @@
         system:
         let
           pkgs = nixpkgs.legacyPackages.${system};
+          systemcWasm = pkgs.callPackage ./nix/systemc.nix { src = systemc-source; };
         in
         {
           default = pkgs.mkShell {
@@ -68,6 +95,7 @@
               nixfmt
             ];
             SCR1_SOURCE = scr1;
+            SCR1_SYSTEMC = systemcWasm;
           };
           browser = pkgs.mkShell {
             packages = [ (pkgs.python3.withPackages (p: [ p.playwright ])) ];

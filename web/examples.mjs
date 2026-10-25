@@ -85,3 +85,55 @@ sw a1, 4(t2)
 li t0, 0xf0000004
 sw zero, 0(t0)`,
 };
+
+examples.timer = {
+  name: "Clocked timer",
+  description:
+    "Attach the timer at 0x40000100. Poll its compare flag, then store elapsed clocks and status at 0x1000.",
+  source: `# One-shot timer: match after 64 active rising edges
+li t0, 0x40000100
+li a0, 64
+sw a0, 4(t0)
+sw zero, 8(t0)
+li a0, 1
+sw a0, 12(t0)
+sw a0, 0(t0)
+wait:
+  lw a1, 12(t0)
+  andi a1, a1, 1
+  beqz a1, wait
+li t1, 0x1000
+lw a0, 8(t0)
+sw a0, 0(t1)
+sw a1, 4(t1)
+# Clear sticky flag by writing one
+sw a1, 12(t0)
+li t0, 0xf0000004
+sw zero, 0(t0)`,
+};
+examples.mailbox = {
+  name: "Clocked mailbox FIFO",
+  description:
+    "Attach the mailbox at 0x40000200. Send three words, let the clock transfer them, and receive them into RAM at 0x1000.",
+  source: `# Queue three words; each transfer follows a CPU clock edge
+li t0, 0x40000200
+li a0, 17
+sw a0, 0(t0)
+li a0, 34
+sw a0, 0(t0)
+li a0, 51
+sw a0, 0(t0)
+li t1, 0x1000
+li t2, 3
+receive:
+  lw a1, 8(t0)
+  andi a1, a1, 15
+  beqz a1, receive
+  lw a0, 4(t0)
+  sw a0, 0(t1)
+  addi t1, t1, 4
+  addi t2, t2, -1
+  bnez t2, receive
+li t0, 0xf0000004
+sw zero, 0(t0)`,
+};

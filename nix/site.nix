@@ -8,6 +8,7 @@
   scr1,
   models,
   peripheral,
+  toolchain,
 }:
 stdenvNoCC.mkDerivation {
   pname = "scr1-workbench";
@@ -31,12 +32,16 @@ stdenvNoCC.mkDerivation {
     "-DSCR1_MODELS=${lib.concatStringsSep ";" (lib.attrValues models)}"
     "-DSCR1_LICENSE=${scr1}/LICENSE"
     "-DSCR1_PERIPHERALS=${peripheral}"
+    "-DSCR1_TOOLCHAIN_ASSETS=${toolchain}"
   ];
   doCheck = true;
   strictDeps = true;
   meta = {
     description = "Cycle-stepped SCR1 RTL workbench for the browser";
-    license = import ./licenses.nix { inherit lib; };
+    license = (import ./licenses.nix { inherit lib; }) ++ [
+      lib.licenses.gpl3Plus
+      lib.licenses.asl20
+    ];
     platforms = lib.platforms.unix;
   };
 }

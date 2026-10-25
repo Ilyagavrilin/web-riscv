@@ -22,7 +22,11 @@ function bus(address, data = 0, write = 0, width = 2) {
 
 test("standalone module counts clocks and supports little-endian subword IO", async () => {
   const module = await WebAssembly.compile(buffer);
-  assert.equal(WebAssembly.Module.imports(module).length, 0);
+  assert.ok(
+    WebAssembly.Module.imports(module).every(
+      (i) => i.module === "wasi_snapshot_preview1",
+    ),
+  );
   const peripheral = new PeripheralBus();
   await peripheral.attach(buffer, base, "counter");
   peripheral.dispatch(bus(base + 4, 4, 1));
@@ -50,7 +54,7 @@ test("standalone module counts clocks and supports little-endian subword IO", as
 test("SCR1 uses the hot-loaded Wasm device through real MMIO bus transactions", async () => {
   const engine = new Engine(await createModel("imc"));
   engine.load(
-    assemble(
+    await assemble(
       "li a0, 42\nli t0, 0x40000000\nli a1, 1\nsw a1, 12(t0)\nnop\nnop\nnop\nsw zero, 12(t0)\nlw a2, 8(t0)\nli t0, 0xf0000004\nsw zero, 0(t0)",
     ),
   );
@@ -70,10 +74,10 @@ test("SCR1 uses the hot-loaded Wasm device through real MMIO bus transactions", 
   await engine.peripherals.attach(buffer, base, "replacement");
   assert.deepEqual(engine.snapshot().registers, savedRegisters);
   assert.equal(engine.peripherals.snapshot().words[2], 0);
-  engine.load(assemble("lw a0, 0(t0)"));
+  engine.load(await assemble("lw a0, 0(t0)"));
   assert.equal(engine.peripherals.snapshot().words[0], 1);
   engine.peripherals.detach();
-  engine.load(assemble("li t0, 0x40000000\nlw a0, 0(t0)"));
+  engine.load(await assemble("li t0, 0x40000000\nlw a0, 0(t0)"));
   engine.advance("run");
   assert.equal(engine.status, "trap");
   assert.equal(engine.cause, 5);
@@ -81,7 +85,7 @@ test("SCR1 uses the hot-loaded Wasm device through real MMIO bus transactions", 
 test("selected counting demo runs on every CPU profile with its own peripheral instance", async () => {
   const results = await compareProfiles(
     createModel,
-    assemble(examples.peripheral.source),
+    await assemble(examples.peripheral.source),
     () => {},
     undefined,
     image,

@@ -1,0 +1,23 @@
+{
+  "pulse-counter": {
+    "name": "GPIO + cycle counter",
+    "source": "pulse-counter.cpp",
+    "base": "0x40000000",
+    "demo": "peripheral",
+    "description": "Rotate GPIO while counting active CPU clocks. Registers: GPIO, period, elapsed clocks, enable. SystemC SC_METHOD example."
+  },
+  "timer": {
+    "name": "Clocked timer",
+    "source": "timer.cpp",
+    "base": "0x40000100",
+    "demo": "timer",
+    "description": "One-shot or periodic timer with a sticky compare flag. Registers: control (enable/periodic), period, elapsed, status (write one to clear). SystemC SC_METHOD example."
+  },
+  "mailbox": {
+    "name": "Clocked mailbox FIFO",
+    "source": "mailbox.cpp",
+    "base": "0x40000200",
+    "demo": "mailbox",
+    "description": "Transmit a word; the next rising edge places it in an eight-word receive FIFO. Registers: TX, RX, status, control. Reading RX pops; inspection never pops. SystemC SC_METHOD example."
+  }
+}

@@ -113,15 +113,18 @@
               <span>Choose a file or drop an ELF here</span></label
             ><input id="elf" type="file" accept=".elf,.axf,application/x-elf" />
           </div>
-          <div id="program-info" class="hint"></div>
-          <div id="elf-segments" class="table-scroll"></div>
-          <div class="library-row">
-            <label for="saved-elf">Local ELF library</label
-            ><select id="saved-elf">
-              <option value="">Choose a saved executable</option></select
-            ><button id="load-saved-elf">Load</button
-            ><button id="delete-saved-elf">Remove saved file</button>
-          </div>
+          <details id="program-library">
+            <summary>Saved executables &amp; segment details</summary>
+            <div id="program-info" class="hint"></div>
+            <div id="elf-segments" class="table-scroll"></div>
+            <div class="library-row">
+              <label for="saved-elf">Local ELF library</label
+              ><select id="saved-elf">
+                <option value="">Choose a saved executable</option></select
+              ><button id="load-saved-elf">Load</button
+              ><button id="delete-saved-elf">Remove saved file</button>
+            </div>
+          </details>
         </section>
         <div class="workspace">
           <section class="panel source">
@@ -146,7 +149,7 @@
               class="listing"
               aria-label="Program listing"
             ></div>
-            <details id="assembly-editor" open>
+            <details id="assembly-editor">
               <summary>Assembly editor</summary>
               <div class="panel-title">
                 <select id="example" aria-label="Example program"></select
@@ -239,6 +242,7 @@ Waiting for program output.</pre>
             ><button id="peripheral-attach" disabled>Attach example</button
             ><button id="peripheral-demo" disabled>Load counting demo</button>
           </div>
+          <p id="device-description" class="hint"></p>
           <div class="file-row">
             <label for="peripheral-file">Load your own module</label
             ><input
@@ -446,6 +450,85 @@ Waiting for program output.</pre>
             instances can occupy different windows, including multiple instances
             of the same file.
           </p>
+          <h3>SystemC device SDK</h3>
+          <p>
+            All three example devices are real SystemC modules, linked against
+            the pinned Accellera SystemC 3.0.2 kernel. Write C++17 register
+            behavior and an <code>SC_METHOD</code> sensitive to
+            <code>clk.pos()</code>. You do not write Wasm exports or manually
+            call the clock method.
+          </p>
+          <pre><code>#include &lt;scr1/device.hpp&gt;
+class Counter final : public scr1::ClockedDevice&lt;1&gt; {
+public:
+  explicit Counter(sc_core::sc_module_name name) : ClockedDevice(name) {
+    SC_METHOD(count);
+    sensitive &lt;&lt; clk.pos();
+    dont_initialize();
+  }
+  void count() { ++registers_[0]; }
+};
+scr1::Device&amp; scr1::device() noexcept {
+  static Counter instance{"counter"};
+  return instance;
+}</code></pre>
+          <p>
+            <code>read(index)</code> may have side effects;
+            <code>inspect(index) const</code> must not.
+            <code>write(index, value, mask)</code> receives a word-aligned value
+            and byte-lane bitmask. Call
+            <code>store(index, value, mask)</code> for a normal masked register
+            write; override it for read-only or write-one-to-clear registers.
+            Indices are word register numbers.
+          </p>
+          <p>
+            The adapter binds a SystemC signal to <code>clk</code>. Each
+            accepted CPU request updates bus-visible state, then the kernel
+            advances a low and a high half-cycle of 500 ps each, settling delta
+            cycles. A model therefore receives one positive edge per simulated
+            CPU clock. Browser timers and UI refresh do not drive the device.
+            Each Wasm instance owns an independent SystemC kernel.
+          </p>
+          <p>
+            This browser build supports clocked <code>SC_METHOD</code> models,
+            signals and delta-cycle evaluation. Coroutine
+            <code>SC_THREAD</code>/<code>SC_CTHREAD</code> models are not
+            supported by the single-threaded host. No SharedArrayBuffer or
+            cross-origin-isolation headers are needed. A small host provides
+            only empty environment/stdin and bounded diagnostic stdout/stderr;
+            it grants no filesystem, network or wall-clock access.
+          </p>
+          <pre><code>nix develop
+emcmake cmake -S . -B build/my-device -G Ninja \
+  -DSCR1_PERIPHERAL=ON \
+  -DSystemCLanguage_DIR="$SCR1_SYSTEMC/lib/cmake/SystemCLanguage" \
+  -DSCR1_MMIO_SOURCE="$PWD/my-device.cpp"
+cmake --build build/my-device
+# Devices → Load your own module → build/my-device/custom-device.wasm</code></pre>
+          <p>
+            <a href="./peripherals/include/scr1/device.hpp" download
+              >Download SDK header</a
+            >
+            · <a href="./peripherals/adapter.cpp" download>SystemC adapter</a> ·
+            <a href="./peripherals/timer.cpp" download>Timer source</a> ·
+            <a href="./peripherals/mailbox.cpp" download>Mailbox source</a>
+          </p>
+          <h3>New clocked examples</h3>
+          <p>
+            <strong>Timer:</strong> +0x00 control (bit 0 enable, bit 1
+            periodic), +0x04 period, +0x08 elapsed, +0x0C sticky match (write 1
+            to clear). Zero period becomes one. One-shot stops at the match;
+            periodic mode resets elapsed. Poll the flag; an external interrupt
+            connection is not present yet.
+          </p>
+          <p>
+            <strong>Mailbox:</strong> +0x00 TX, +0x04 RX (read pops), +0x08
+            status, +0x0C control (bit 0 enable, bit 1 flush command). Status
+            bits 3:0 give RX depth; bits 8/9 mean full/empty, bit 10 is sticky
+            overflow (write 1 to clear), and bit 11 is pending TX. A staged TX
+            word transfers into the eight-word FIFO on the next enabled clock
+            edge. Inspection never consumes data.
+          </p>
           <h3>ABI v1</h3>
           <pre><code>uint32_t mmio_abi_version(void); // required: return 1
 uint32_t mmio_size(void);        // required: window size in bytes
@@ -464,15 +547,11 @@ uint32_t mmio_inspect(uint32_t aligned_offset); // optional: no side effects</co
           </p>
           <h3>Build and attach</h3>
           <p>
-            Start with the working C example below. Compile a standalone module
-            with no imports, export the ABI functions, and omit a main entry
-            point. No WASI, allocator or JavaScript glue is needed.
+            Start with the working C example below. The CMake target links
+            SystemC and exports the device ABI automatically; module authors
+            write neither Wasm exports nor JavaScript glue.
           </p>
-          <pre><code>nix develop
-emcc peripherals/pulse-counter.c -O2 --no-entry \
-  -sSTANDALONE_WASM=1 -sFILESYSTEM=0 \
-  '-sEXPORTED_FUNCTIONS=["_mmio_abi_version","_mmio_size","_mmio_reset","_mmio_read","_mmio_write","_mmio_tick","_mmio_inspect"]' \
-  -o counter.wasm</code></pre>
+          <pre><code>nix build .#peripherals</code></pre>
           <p>
             Open Devices, set an unused base such as <code>0x40000000</code>,
             and choose your <code>.wasm</code> file. Windows must be
@@ -490,8 +569,8 @@ emcc peripherals/pulse-counter.c -O2 --no-entry \
             peripheral and saves GPIO at <code>0x1000</code> and elapsed clocks
             at <code>0x1004</code>. Use diagnostic mode to follow each access.
           </p>
-          <a class="button-link" href="./peripherals/pulse-counter.c" download
-            >Download C source</a
+          <a class="button-link" href="./peripherals/pulse-counter.cpp" download
+            >Download SystemC source</a
           >
           <a
             class="button-link"
@@ -503,7 +582,7 @@ emcc peripherals/pulse-counter.c -O2 --no-entry \
             <summary>Read the full C implementation</summary>
             <pre
               id="module-source"
-            ><code>Open this section to load the source.</code></pre>
+            ><code>Open this section to load the SystemC source.</code></pre>
           </details>
           <h3>Lifecycle and faults</h3>
           <p>
@@ -538,12 +617,11 @@ emcc peripherals/pulse-counter.c -O2 --no-entry \
           </p>
           <h3>Assembly reference</h3>
           <p>
-            RV32I arithmetic, shifts, loads/stores, branches, lui/auipc,
-            jal/jalr, ecall/ebreak/wfi; M multiplication and division where
-            supported. Pseudo instructions: li, la, mv, j, ret, nop, beqz/bnez.
-            Labels, ABI or x-register names, .word, decimal/hex integers and #
-            comments are supported. Use an external assembler and ELF for
-            compressed mnemonics, CSR mnemonics and other directives.
+            GNU as and ld 2.46.0 support standard RISC-V syntax, directives,
+            macros, expressions, relocations and ISA checks. The editor links a
+            real ELF at 0x200. It defaults to .option norvc for predictable
+            instruction widths; add .option rvc for compressed emission.
+            Supported hardware extensions depend on the selected SCR1 profile.
           </p>
           <p>
             Ctrl/⌘+Enter assembles, Alt+→ steps an instruction, Escape pauses.
@@ -589,8 +667,11 @@ emcc peripherals/pulse-counter.c -O2 --no-entry \
           </p>
           <h2>Licenses</h2>
           <p>
-            Workbench: <a href="./LICENSE">MIT</a>. SCR1:
-            <a href="./SCR1-LICENSE">Solderpad Hardware Licence 2.0</a>.
+            Workbench: <a href="./LICENSE">MIT</a>. SystemC:
+            <a href="./peripherals/SystemC-LICENSE">Apache 2.0</a>. GNU
+            binutils: <a href="./toolchain/COPYING">GPLv3+</a>, with
+            <a href="./toolchain/SOURCE.txt">corresponding source locations</a>.
+            SCR1: <a href="./SCR1-LICENSE">Solderpad Hardware Licence 2.0</a>.
             <a
               href="https://github.com/syntacore/scr1"
               target="_blank"

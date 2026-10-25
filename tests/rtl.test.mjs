@@ -5,8 +5,8 @@ import { assemble, loadElf } from "../web/assembler.mjs";
 import { examples } from "../web/examples.mjs";
 import { Engine, toVcd } from "../web/engine.mjs";
 const engine = new Engine(await createModel("imc"));
-function run(source) {
-  engine.load(assemble(source));
+async function run(source) {
+  engine.load(await assemble(source));
   for (
     let i = 0;
     i < 20 && engine.status !== "halted" && engine.status !== "trap";
@@ -15,8 +15,8 @@ function run(source) {
     engine.advance("run");
   return engine.snapshot();
 }
-test("SCR1 executes Fibonacci and stores actual RTL results", () => {
-  const s = run(examples.fibonacci.source);
+test("SCR1 executes Fibonacci and stores actual RTL results", async () => {
+  const s = await run(examples.fibonacci.source);
   assert.equal(s.status, "halted");
   assert.equal(s.exitCode, 0);
   assert.equal(s.registers[0], 0);
@@ -28,20 +28,20 @@ test("SCR1 executes Fibonacci and stores actual RTL results", () => {
   );
   assert.deepEqual(words, [0, 1, 1, 2, 3, 5, 8, 13, 21, 34, 55, 89]);
 });
-test("UART is printed exactly once per bus transaction", () => {
-  const s = run(examples.hello.source);
+test("UART is printed exactly once per bus transaction", async () => {
+  const s = await run(examples.hello.source);
   assert.equal(s.status, "halted");
   assert.equal(s.console, "SCR1\n");
 });
-test("M extension arithmetic is executed by SCR1", () => {
-  const s = run(examples.multiply.source);
+test("M extension arithmetic is executed by SCR1", async () => {
+  const s = await run(examples.multiply.source);
   assert.equal(s.status, "halted");
   assert.equal(s.registers[12], 1728);
   assert.equal(s.registers[13], 12);
   assert.equal(s.registers[14], 0);
 });
-test("instruction stepping, PC breakpoints and reset", () => {
-  engine.load(assemble(examples.fibonacci.source));
+test("instruction stepping, PC breakpoints and reset", async () => {
+  engine.load(await assemble(examples.fibonacci.source));
   engine.advance("instruction");
   assert.equal(engine.retired, 1);
   engine.breakpoints = new Set([0x210]);
@@ -51,19 +51,21 @@ test("instruction stepping, PC breakpoints and reset", () => {
   const stoppedAt = engine.cycles;
   engine.advance("run");
   assert.ok(engine.cycles > stoppedAt);
+  engine.breakpoints.clear();
+  engine.advance("run");
   assert.equal(engine.status, "halted");
-  engine.load(assemble("li a0, 7\nebreak"));
+  engine.load(await assemble("li a0, 7\nebreak"));
   engine.breakpoints.clear();
   engine.advance("run");
   assert.equal(engine.status, "trap");
   assert.equal(engine.cause, 3);
   assert.equal(engine.m._reg(10), 7);
-  engine.load(assemble("nop"));
+  engine.load(await assemble("nop"));
   assert.equal(engine.m._reg(10), 0);
   assert.equal(engine.m._peek(0x1004), 0);
 });
-test("byte and halfword memory, sign extension, x0 and bus faults", () => {
-  let s = run(
+test("byte and halfword memory, sign extension, x0 and bus faults", async () => {
+  let s = await run(
     "li t0, 0x1000\nli t1, -1\nsb t1, 1(t0)\nlb a0, 1(t0)\nlbu a1, 1(t0)\nsh t1, 2(t0)\nlh a2, 2(t0)\nlhu a3, 2(t0)\naddi zero, zero, 99\nli t0, 0xf0000004\nsw zero, 0(t0)",
   );
   assert.equal(s.status, "halted");
@@ -72,11 +74,11 @@ test("byte and halfword memory, sign extension, x0 and bus faults", () => {
   assert.equal(s.registers[12], 0xffffffff);
   assert.equal(s.registers[13], 65535);
   assert.equal(s.registers[0], 0);
-  s = run("li t0, 0x10000\nlw a0, 0(t0)");
+  s = await run("li t0, 0x10000\nlw a0, 0(t0)");
   assert.equal(s.status, "trap");
   assert.equal(s.cause, 5);
 });
-test("loads a real ELF image and executes compressed instructions", () => {
+test("loads a real ELF image and executes compressed instructions", async () => {
   const buffer = new ArrayBuffer(0x104),
     v = new DataView(buffer);
   v.setUint32(0, 0x7f454c46, false);
@@ -102,20 +104,20 @@ test("loads a real ELF image and executes compressed instructions", () => {
   assert.equal(engine.m._reg(10), 7);
   assert.equal(engine.history[0].pc, 0x200);
 });
-test("trace contains cycle samples and valid VCD scope", () => {
+test("trace contains cycle samples and valid VCD scope", async () => {
   const vcd = toVcd(engine.wave);
   assert.match(vcd, /\$enddefinitions \$end/);
   assert.match(vcd, /#1\n/);
   assert.ok(engine.wave.length > 0);
 });
 
-test("long runs retain bounded traces and unsigned bus addresses", () => {
-  engine.load(assemble("loop: j loop"));
+test("long runs retain bounded traces and unsigned bus addresses", async () => {
+  engine.load(await assemble("loop: j loop"));
   engine.breakpoints.clear();
   for (let i = 0; i < 4; i++) engine.advance("run");
   assert.equal(engine.cycles, 8000);
   assert.equal(engine.wave.length, 4096);
   assert.equal(engine.history.length, 1024);
-  run(examples.hello.source);
+  await run(examples.hello.source);
   assert.ok(engine.wave.some((row) => row.address === 0xf0000000));
 });

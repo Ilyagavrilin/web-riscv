@@ -840,3 +840,19 @@ th {
   padding-top: 18px;
   border-top: 1px solid var(--border);
 }
+
+.program-loader {
+  padding: 14px 18px;
+}
+.program-loader .panel-title {
+  margin-bottom: 10px;
+}
+.program-loader .dropzone {
+  border: 0;
+  background: transparent;
+  padding: 0;
+}
+.program-loader summary {
+  padding: 10px 0;
+  font-size: 14px;
+}

@@ -100,6 +100,7 @@ try:
         )
         assert "custom.elf" in page.locator("#program-name").inner_text()
         assert "addi x10, x0, 42" in page.locator("#listing").inner_text()
+        page.locator("#program-library summary").click()
         assert "ELF32" in page.locator("#program-info").inner_text()
         page.locator("#breakpoint-address").fill("0x204")
         page.locator("#breakpoint-form button").click()
@@ -111,13 +112,17 @@ try:
         page.locator("#run").click()
         finished()
         assert (
-            "0000002a" in page.locator(".register").filter(has=page.locator("b",has_text="a0")).inner_text()
+            "0000002a"
+            in page.locator(".register")
+            .filter(has=page.locator("b", has_text="a0"))
+            .inner_text()
         )
         page.reload()
         ready()
         page.wait_for_selector(
             '#saved-elf option[value="elf:custom.elf"]', state="attached"
         )
+        page.locator("#program-library summary").click()
         page.locator("#saved-elf").select_option("elf:custom.elf")
         page.locator("#load-saved-elf").click()
         page.wait_for_function(
@@ -133,6 +138,27 @@ try:
             "document.querySelector('#log-summary').textContent.startsWith('Diagnostic capture enabled')"
         )
         tab("devices")
+        for module_name, expected in [
+            ("timer", "40 00 00 00"),
+            ("mailbox", "11 00 00 00 22 00 00 00 33 00 00 00"),
+        ]:
+            page.locator("#peripheral-example").select_option(module_name)
+            page.locator("#peripheral-attach").click()
+            page.wait_for_function(
+                "document.querySelectorAll('.device-card').length === 1"
+            )
+            page.locator("#peripheral-demo").click()
+            ready()
+            page.locator("#run").click()
+            finished()
+            tab("debugger")
+            assert expected in page.locator("#memory").inner_text()
+            tab("devices")
+            page.locator("#peripheral-detach").click()
+            page.wait_for_function(
+                "document.querySelectorAll('.device-card').length === 0"
+            )
+        page.locator("#peripheral-example").select_option("pulse-counter")
         module = (project / "result/peripherals/pulse-counter.wasm").read_bytes()
         page.locator("#peripheral-file").set_input_files(
             {
@@ -200,10 +226,10 @@ try:
         tab("guide")
         page.locator("#mmio-guide details summary").click()
         page.wait_for_function(
-            "document.querySelector('#module-source').textContent.includes('mmio_reset')"
+            "document.querySelector('#module-source').textContent.includes('SC_METHOD')"
         )
         with page.expect_download():
-            page.get_by_role("link", name="Download C source").click()
+            page.get_by_role("link", name="Download SystemC source").click()
         tab("about")
         assert "Unmodified" in page.locator("#view-about").inner_text()
         tab("debugger")
